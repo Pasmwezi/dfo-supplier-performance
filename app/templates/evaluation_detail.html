@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Evaluation EV-{{ evaluation.id }} · DFO SPM{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><div class="eyebrow">EV-{{ '%05d'|format(evaluation.id) }} · VERSION {{ evaluation.version }}</div><h1>{{ evaluation.contract.supplier.name }}</h1><p class="mono">{{ evaluation.contract.contract_number }} · {{ evaluation.contract.procurement_type }} · {{ evaluation.contract.region }}</p></div>
+  {% if can_edit %}<a class="button primary" href="/evaluations/{{ evaluation.id }}/edit">Edit returned evaluation →</a>
+  {% elif evaluation.status == 'APPROVED' %}<a class="button secondary" href="/api/evaluations/{{ evaluation.id }}/correspondence.pdf">Download letter ↓</a>
+  {% else %}<span class="muted" role="status">Official letter · Available after approval</span>{% endif %}
+</div>
+
+{% if history.return_comments %}
+<section class="panel return-instructions" aria-labelledby="return-comments-title">
+  <div class="panel-title"><div><span class="eyebrow">REVISION DIRECTIONS</span><h2 id="return-comments-title">Reviewer and approver return comments</h2></div>{% if can_edit %}<a class="button secondary" href="/evaluations/{{ evaluation.id }}/edit">Revise evaluation</a>{% endif %}</div>
+  {% for item in history.return_comments|reverse %}
+  <article class="return-comment"><p>{{ item.comment }}</p><small>{{ item.user }} · {{ item.timestamp[:19]|replace('T', ' ') }}</small></article>
+  {% endfor %}
+</section>
+{% endif %}
+
+<div class="detail-grid">
+  <section class="panel score-card"><span class="eyebrow">TOTAL PERFORMANCE</span><strong>{{ '%.1f'|format(evaluation.total_score) }}%</strong><small>{{ '%.0f'|format(score_summary.raw_score) }} / {{ score_summary.max_applicable_score }} applicable points</small><span class="tag outcome-{{ evaluation.outcome|lower }}">{{ evaluation.outcome|replace('_',' ')|title }}</span><small>{{ evaluation.model|replace('_',' ') }} · {{ evaluation.evaluation_date }}</small></section>
+  <section class="panel workflow">
+    <span class="eyebrow">APPROVAL WORKFLOW</span><h2>{{ evaluation.status|title }}</h2>
+    <div class="workflow-line"><span class="done">Draft</span><span class="{% if evaluation.status in ['SUBMITTED','REVIEWED','APPROVED'] %}done{% endif %}">Submitted</span><span class="{% if evaluation.status in ['REVIEWED','APPROVED'] %}done{% endif %}">Reviewed</span><span class="{% if evaluation.status == 'APPROVED' %}done{% endif %}">Approved</span></div>
+    <div class="workflow-actions" data-id="{{ evaluation.id }}">{% for action in allowed_actions %}<button type="button" class="button {{ 'secondary' if action == 'return' else 'primary' }}" data-action="{{ action }}">{{ action|title }}</button>{% endfor %}{% if not allowed_actions and evaluation.status != 'APPROVED' %}<small class="muted">No workflow action is assigned to your role at this stage.</small>{% endif %}</div>
+    <div id="workflow-message" role="alert" aria-live="polite"></div>
+    {% if 'return' in allowed_actions %}
+    <dialog id="return-dialog" class="return-dialog">
+      <form id="return-form" method="dialog">
+        <span class="eyebrow">RETURN FOR REVISION</span><h2>Tell the evaluator what must be revised</h2>
+        <p class="muted">The comment becomes part of the audit history and will be shown to the evaluator.</p>
+        <label>Return comment<textarea id="return-comment" rows="5" minlength="10" maxlength="4000" required placeholder="Identify the score, evidence, wording, or other information that must be revised."></textarea></label>
+        <div class="form-actions"><button type="button" class="button secondary" data-close-return>Cancel</button><button type="submit" class="button primary">Return evaluation →</button></div>
+      </form>
+    </dialog>
+    {% endif %}
+  </section>
+</div>
+
+{% set details = evaluation.project_details %}
+<section class="panel project-record">
+  <div class="panel-title"><div><span class="eyebrow">PROJECT RECORD · DOSSIER DU PROJET</span><h2>Project and contract information</h2></div></div>
+  <div class="record-grid">
+    <div><small>Contract number</small><strong class="mono">{{ evaluation.contract.contract_number }}</strong></div>
+    <div><small>Project number</small><strong class="mono">{{ evaluation.contract.project_number or 'Not recorded' }}</strong></div>
+    <div><small>Client reference number</small><strong>{{ details.client_reference_number or 'Not recorded' if details else 'Not recorded' }}</strong></div>
+    <div class="span-2"><small>Description of work</small><strong>{{ details.description_of_work or 'Not recorded' if details else 'Not recorded' }}</strong></div>
+    <div><small>{{ 'Contractor’s business name' if evaluation.model == 'CONSTRUCTION' else 'Firm’s name' }}</small><strong>{{ evaluation.contract.supplier.name }}</strong></div>
+    <div><small>Firm / contractor address</small><strong>{{ details.firm_address or 'Not recorded' if details else 'Not recorded' }}</strong></div>
+    {% if evaluation.model == 'CONSTRUCTION' %}<div><small>Contractor’s superintendent</small><strong>{{ details.contractor_superintendent or 'Not recorded' if details else 'Not recorded' }}</strong></div>{% endif %}
+  </div>
+  <div class="record-columns">
+    <div><span class="eyebrow">PROJECT MANAGER</span><dl><dt>Name</dt><dd>{{ details.project_manager_name or 'Not recorded' if details else 'Not recorded' }}</dd><dt>Telephone</dt><dd>{{ details.project_manager_telephone or 'Not recorded' if details else 'Not recorded' }}</dd><dt>Fax</dt><dd>{{ details.project_manager_fax or 'Not recorded' if details else 'Not recorded' }}</dd><dt>Cell</dt><dd>{{ details.project_manager_cell or 'Not recorded' if details else 'Not recorded' }}</dd><dt>Email</dt><dd>{{ details.project_manager_email or 'Not recorded' if details else 'Not recorded' }}</dd></dl></div>
+    <div><span class="eyebrow">CONTRACT INFORMATION</span><dl><dt>Contract award amount</dt><dd>{% if details and details.contract_award_amount is not none %}${{ '{:,.2f}'.format(details.contract_award_amount) }}{% else %}Not recorded{% endif %}</dd><dt>Contract award date</dt><dd>{{ details.contract_award_date or 'Not recorded' if details else 'Not recorded' }}</dd><dt>Final amount</dt><dd>{% if details and details.final_amount is not none %}${{ '{:,.2f}'.format(details.final_amount) }}{% else %}Not recorded{% endif %}</dd><dt>Contract completion date</dt><dd>{{ details.contract_completion_date or 'Not recorded' if details else 'Not recorded' }}</dd><dt>{{ 'Number of change orders' if evaluation.model == 'CONSTRUCTION' else 'Number of amendments' }}</dt><dd>{{ details.contract_changes_count if details and details.contract_changes_count is not none else 'Not recorded' }}</dd>{% if evaluation.model == 'CONSTRUCTION' %}<dt>Final certificate date</dt><dd>{{ details.final_certificate_date or 'Not recorded' if details else 'Not recorded' }}</dd>{% endif %}</dl></div>
+  </div>
+</section>
+
+<section class="panel table-panel"><div class="panel-title"><div><span class="eyebrow">ASSESSMENT</span><h2>Criterion ratings</h2></div></div><table><thead><tr><th>Criterion</th><th>Weight</th><th>Score</th><th>Rating</th></tr></thead><tbody>{% for name,score in evaluation.scores.items() %}<tr><td><strong>{{ name }}</strong></td><td>{% if score is none %}Excluded ({{ evaluation.weights.get(name, 20) if evaluation.weights else 20 }}%){% else %}{{ evaluation.weights.get(name, 20) if evaluation.weights else 20 }}%{% endif %}</td><td><strong>{% if score is none %}N/A{% else %}{{ score }} / 20{% endif %}</strong></td><td>{{ evaluation.ratings[name] }}</td></tr>{% endfor %}</tbody></table></section>
+<div class="dashboard-grid">
+  <section class="panel"><span class="eyebrow">COMMENTS</span><h2>Evaluation record</h2><p class="long-text">{{ evaluation.comments or 'No comments recorded.' }}</p><div class="issue-row">{% for issue in evaluation.issues %}<span class="tag risk-medium">{{ issue|title }}</span>{% endfor %}</div></section>
+  <section class="panel"><span class="eyebrow">AUDIT & VERSION HISTORY</span><h2>{{ history.versions|length }} versions · {{ history.audit|length }} audit events</h2><div class="timeline">{% for item in history.audit|reverse %}<div><span></span><p><strong>{{ item.action|replace('_',' ')|title }}</strong><small>{{ item.user }} · {{ item.timestamp[:19]|replace('T',' ') }}</small>{% if item.field_name %}<small>Field: {{ item.field_name }}</small>{% endif %}</p></div>{% endfor %}</div></section>
+</div>
+{% endblock %}

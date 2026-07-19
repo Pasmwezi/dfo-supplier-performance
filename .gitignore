@@ -1,0 +1,10 @@
+.deps/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+.env
+postgres-data/
+data/attachments/*
+!data/attachments/.gitkeep

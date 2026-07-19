@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% set editing = evaluation is defined and evaluation %}
+{% block title %}{{ 'Revise' if editing else 'New' }} evaluation · DFO SPM{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <div class="eyebrow">{{ 'RETURNED EVALUATION · CORRECT AND RESUBMIT' if editing else 'CONTROLLED PERFORMANCE RECORD' }}</div>
+    <h1>{{ 'Revise evaluation EV-%05d'|format(evaluation.id) if editing else 'Record a new evaluation' }}</h1>
+    <p>{{ 'Review the return comments, revise the applicable fields, and save the evaluation before resubmitting it.' if editing else 'Scores, evidence and approval history are retained as an auditable record.' }}</p>
+  </div>
+  <span class="status-pill {{ 'risk-high' if editing else 'risk-low' }}">{{ evaluation.status|title if editing else 'Draft on save' }}</span>
+</div>
+
+{% if editing and return_comments %}
+<section class="panel return-instructions" aria-labelledby="return-instructions-title">
+  <div class="panel-title">
+    <div><span class="eyebrow">ACTION REQUIRED</span><h2 id="return-instructions-title">Reviewer or approver return comments</h2></div>
+  </div>
+  {% for item in return_comments|reverse %}
+  <article class="return-comment">
+    <p>{{ item.comment }}</p>
+    <small>{{ item.user }} · {{ item.timestamp[:19]|replace('T', ' ') }}</small>
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+<form id="evaluation-form" class="stack"{% if editing %} data-evaluation-id="{{ evaluation.id }}"{% endif %}>
+  <section class="panel form-section">
+    <div class="step">01</div>
+    <div>
+      <h2>{{ 'Evaluation being revised' if editing else 'Evaluation context' }}</h2>
+      {% if editing %}
+      <div class="form-grid">
+        <div><span class="muted">Supplier</span><strong>{{ evaluation.contract.supplier.name }}</strong></div>
+        <div><span class="muted">Contract</span><strong class="mono">{{ evaluation.contract.contract_number }}</strong></div>
+        <div><span class="muted">Model</span><strong>{{ evaluation.model|replace('_', ' ') }}</strong></div>
+        <div><span class="muted">Status</span><strong>{{ evaluation.status|title }}</strong></div>
+        <input type="hidden" name="model" id="model" value="{{ evaluation.model }}">
+      </div>
+      {% else %}
+      <fieldset class="record-mode"><legend>How do you want to identify the supplier and contract?</legend><div class="checks"><label><input type="radio" name="record_mode" value="existing" checked> Select an existing record</label><label><input type="radio" name="record_mode" value="new"> Add a new firm / contractor / supplier</label></div></fieldset>
+      <div id="existing-contract-fields" class="form-grid"><label class="span-2">Contract / supplier<select name="contract_id" required>{% for c in contracts %}<option value="{{ c.id }}" data-contract-value="{{ c.contract_value if c.contract_value is not none else '' }}">{{ c.contract_number }} · {{ c.supplier.name }} · {{ c.procurement_type }}</option>{% endfor %}</select></label></div>
+      <div id="new-supplier-fields" class="inline-record hidden"><div class="inline-record-heading"><strong>New supplier and contract record</strong><p>The record is validated and created in the same transaction as the evaluation.</p></div><div class="form-grid"><label class="span-2">Supplier / firm legal name<input name="new_supplier_name" maxlength="250"></label><label>Business number<input name="new_supplier_business_number" maxlength="80"></label><label>Contract number<input name="new_contract_number" maxlength="100"></label><label>Project number<input name="new_project_number" maxlength="100"></label><label>Standing offer number<input name="new_standing_offer_number" maxlength="100"></label><label>Call-up number<input name="new_call_up_number" maxlength="100"></label><label>Procurement type<select name="new_procurement_type"><option value="Construction">Construction</option><option value="Architectural Services">Architectural Services</option><option value="Engineering Services">Engineering Services</option><option value="Environmental Services">Environmental Services</option><option value="Feasibility Studies">Feasibility Studies</option><option value="Investigations">Investigations</option><option value="Contract Administration Services">Contract Administration Services</option><option value="Standing Offer Call-Ups">Standing Offer Call-Ups</option><option value="Supply Arrangement Contracts">Supply Arrangement Contracts</option><option value="A&E Standing Offer">A&amp;E Standing Offer</option><option value="Construction Standing Offer">Construction Standing Offer</option><option value="Construction Call-Up">Construction Call-Up</option></select></label><label>Region<select name="new_region"><option>Atlantic</option><option>Quebec</option><option>Ontario and Prairie</option><option>Pacific</option><option>Central and Arctic</option><option>National Capital</option><option>National</option></select></label><label>Department<input name="new_department" value="Fisheries and Oceans Canada" maxlength="200"></label><label>Contract value<input name="new_contract_value" type="number" min="0" step="0.01"></label><label>Contract status<select name="new_contract_status"><option value="ACTIVE">Active</option><option value="CLOSED">Closed</option><option value="SUSPENDED">Suspended</option></select></label></div></div>
+      {% endif %}
+      <div class="form-grid">
+        {% if not editing %}<label>Evaluation model<select name="model" id="model" required><option value="CONSTRUCTION">Construction — GI16 / GC1.22</option><option value="AE">A&amp;E extended — 8 weighted criteria</option><option value="AE_CPERF">A&amp;E CPERF — GI23 / GC26 / 2913-1</option></select></label>{% endif %}
+        <label>Evaluator<input name="evaluator" value="{{ evaluation.evaluator if editing else 'DFO Project Authority' }}" required></label>
+        <label>Evaluation date<input type="date" name="evaluation_date" value="{{ evaluation.evaluation_date if editing else '' }}" required></label>
+        <label>Due date<input type="date" name="due_date" value="{{ evaluation.due_date or '' if editing else '' }}"></label>
+      </div>
+    </div>
+  </section>
+
+  {% set details = evaluation.project_details if editing else none %}
+  <section class="panel form-section">
+    <div class="step">02</div>
+    <div>
+      <h2>Project and contract information</h2>
+      <p class="muted">Record the official CPERF project, firm, project-manager, award and close-out information. Contract number, project number and firm name are sourced from the selected contract record.</p>
+      <div class="form-grid">
+        <label>Client reference number<input name="client_reference_number" maxlength="100" value="{{ details.client_reference_number or '' if details else '' }}"></label>
+        <label class="span-2">Description of work<textarea name="description_of_work" rows="3" maxlength="10000" required>{{ details.description_of_work or '' if details else '' }}</textarea></label>
+        <label class="span-2">Firm / contractor address<textarea name="firm_address" rows="2" maxlength="2000">{{ details.firm_address or '' if details else '' }}</textarea></label>
+        <label class="model-construction-only{% if editing and evaluation.model != 'CONSTRUCTION' %} hidden{% endif %}">Contractor’s superintendent<input name="contractor_superintendent" maxlength="200" value="{{ details.contractor_superintendent or '' if details else '' }}"></label>
+      </div>
+      <div class="subsection-heading"><span class="eyebrow">PROJECT MANAGER · GESTIONNAIRE DE PROJET</span></div>
+      <div class="form-grid">
+        <label>Project manager name<input name="project_manager_name" maxlength="200" required value="{{ details.project_manager_name or '' if details else '' }}"></label>
+        <label>Telephone number<input name="project_manager_telephone" maxlength="50" value="{{ details.project_manager_telephone or '' if details else '' }}"></label>
+        <label>Fax number<input name="project_manager_fax" maxlength="50" value="{{ details.project_manager_fax or '' if details else '' }}"></label>
+        <label>Cell number<input name="project_manager_cell" maxlength="50" value="{{ details.project_manager_cell or '' if details else '' }}"></label>
+        <label class="span-2">Email address<input type="email" name="project_manager_email" maxlength="254" required value="{{ details.project_manager_email or '' if details else '' }}"></label>
+      </div>
+      <div class="subsection-heading"><span class="eyebrow">CONTRACT INFORMATION · INFORMATION SUR LE CONTRAT</span></div>
+      <div class="form-grid">
+        <label>Contract award amount<input type="number" name="contract_award_amount" min="0" step="0.01" required value="{{ details.contract_award_amount if details and details.contract_award_amount is not none else evaluation.contract.contract_value if editing and evaluation.contract.contract_value is not none else '' }}"></label>
+        <label>Contract award date<input type="date" name="contract_award_date" required value="{{ details.contract_award_date or '' if details else '' }}"></label>
+        <label>Final amount <small>When known</small><input type="number" name="final_amount" min="0" step="0.01" value="{{ details.final_amount if details and details.final_amount is not none else '' }}"></label>
+        <label>Contract completion date <small>Actual or forecast</small><input type="date" name="contract_completion_date" value="{{ details.contract_completion_date or '' if details else '' }}"></label>
+        <label>Number of change orders / amendments<input type="number" name="contract_changes_count" min="0" step="1" value="{{ details.contract_changes_count if details and details.contract_changes_count is not none else '' }}"></label>
+        <label class="model-construction-only{% if editing and evaluation.model != 'CONSTRUCTION' %} hidden{% endif %}">Final certificate date<input type="date" name="final_certificate_date" value="{{ details.final_certificate_date or '' if details else '' }}"></label>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <div class="step">03</div>
+    <div>
+      <h2>Performance criteria</h2>
+      <p class="muted">Enter a whole-number score from 0 to 20. Rating bands are applied automatically.</p>
+      <div id="criteria-construction" class="criteria-grid{% if editing and evaluation.model != 'CONSTRUCTION' %} hidden{% endif %}">
+        {% for name in construction %}{% set score = evaluation.scores.get(name) if editing and evaluation.model == 'CONSTRUCTION' else none %}
+        <div class="criterion-card"><label><span>{{ name }}</span><input type="number" min="0" max="20" step="1" data-score="{{ name }}" required value="{{ '' if score is none else score }}"><small>0–5 Unacceptable · 17–20 Superior</small></label>{% if name in construction_optional %}<label class="na-option"><input type="checkbox" data-na-for="{{ name }}"{% if editing and evaluation.model == 'CONSTRUCTION' and score is none %} checked{% endif %}> Not applicable to this project</label>{% endif %}</div>
+        {% endfor %}
+      </div>
+      <div id="criteria-ae" class="criteria-grid{% if not editing or evaluation.model != 'AE' %} hidden{% endif %}">
+        {% for name,weight in ae.items() %}{% set score = evaluation.scores.get(name) if editing and evaluation.model == 'AE' else none %}{% set applied_weight = evaluation.weights.get(name, weight) if editing and evaluation.weights else weight %}
+        <div class="criterion-card"><label><span>{{ name }} <b>{{ applied_weight }}%</b></span><input type="number" min="0" max="20" step="1" data-score="{{ name }}" data-weight="{{ applied_weight }}" value="{{ '' if score is none else score }}" required><small>Weighted contribution: {{ applied_weight }}%</small></label></div>
+        {% endfor %}
+      </div>
+      <div id="criteria-ae-cperf" class="criteria-grid{% if not editing or evaluation.model != 'AE_CPERF' %} hidden{% endif %}">
+        {% for name,weight in ae_cperf.items() %}{% set score = evaluation.scores.get(name) if editing and evaluation.model == 'AE_CPERF' else none %}{% set applied_weight = evaluation.weights.get(name, weight) if editing and evaluation.weights else weight %}
+        <div class="criterion-card"><label><span>{{ name }} <b>{{ applied_weight }}%</b></span><input type="number" min="0" max="20" step="1" data-score="{{ name }}" data-weight="{{ applied_weight }}" value="{{ '' if score is none else score }}" required><small>PWGSC-TPSGC 2913-1 criterion</small></label>{% if name in ae_cperf_optional %}<label class="na-option"><input type="checkbox" data-na-for="{{ name }}"{% if editing and evaluation.model == 'AE_CPERF' and score is none %} checked{% endif %}> Not applicable to this project</label>{% endif %}</div>
+        {% endfor %}
+      </div>
+      <div class="score-note">When a permitted criterion is marked Not Applicable, it is excluded from the denominator and the result is normalized across the applicable criteria. Explain every N/A selection in Comments.</div>
+      <div class="score-preview" aria-live="polite"><span>Calculated score</span><strong id="score-preview">Incomplete</strong><span id="outcome-preview" class="tag">Complete all criteria</span></div>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <div class="step">04</div>
+    <div><h2>Evidence and observations</h2><div class="form-grid"><label class="span-2">Comments<textarea name="comments" rows="5" placeholder="Record objective facts, dates, deliverables and the evidence relied upon.">{{ evaluation.comments if editing else '' }}</textarea></label><fieldset class="span-2"><legend>Issue indicators</legend><div class="checks">{% for issue in ['schedule','cost control','safety','contract administration'] %}<label><input type="checkbox" name="issues" value="{{ issue }}"{% if editing and issue in evaluation.issues %} checked{% endif %}> {{ issue|title }}</label>{% endfor %}</div></fieldset></div></div>
+  </section>
+  <div id="form-message" role="alert"></div>
+  <div class="form-actions"><a class="button secondary" href="{{ '/evaluations/%s/view'|format(evaluation.id) if editing else '/evaluations' }}">Cancel</a><button class="button primary" type="submit">{{ 'Save revisions →' if editing else 'Save draft →' }}</button></div>
+</form>
+{% endblock %}

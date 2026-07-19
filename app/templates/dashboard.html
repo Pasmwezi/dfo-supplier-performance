@@ -1,0 +1,21 @@
+{% extends "base.html" %}{% block title %}Executive dashboard · DFO SPM{% endblock %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">EXECUTIVE DASHBOARD</div><h1>Supplier performance overview</h1><p>Enterprise view of approved evaluations, supplier risk, and regional workload.</p></div>{% if 'EVALUATOR' in request.state.principal.roles %}<a class="button primary" href="/evaluations/new">Create evaluation <span>＋</span></a>{% endif %}</div>
+<section class="kpi-grid">
+  <article class="kpi"><span>Active suppliers</span><strong>{{ dashboard.active_suppliers }}</strong><small>Across all regions</small></article>
+  <article class="kpi"><span>Active contracts</span><strong>{{ dashboard.active_contracts }}</strong><small>Contracts, SOs and call-ups</small></article>
+  <article class="kpi"><span>Average performance</span><strong>{{ dashboard.average_performance if dashboard.average_performance is not none else '—' }}{% if dashboard.average_performance is not none %}%{% endif %}</strong><small>Approved evaluations</small></article>
+  <article class="kpi attention"><span>Suppliers requiring attention</span><strong>{{ dashboard.warning_suppliers }}</strong><small>{{ dashboard.suspended_suppliers }} suspension review</small></article>
+</section>
+<div class="dashboard-grid">
+<section class="panel"><div class="panel-title"><div><span class="eyebrow">RISK DISTRIBUTION</span><h2>Supplier risk profile</h2></div></div>
+<div class="risk-bars">
+{% set total = dashboard.risk_distribution.values()|sum %}{% for label,color in [('LOW','green'),('MEDIUM','yellow'),('HIGH','red'),('NOT_RATED','gray')] %}
+<div class="bar-row"><span>{{ label|replace('_',' ')|title }}</span><div class="bar-track"><div class="bar {{ color }}" style="width:{{ (dashboard.risk_distribution[label] / total * 100) if total else 0 }}%"></div></div><strong>{{ dashboard.risk_distribution[label] }}</strong></div>{% endfor %}
+</div></section>
+<section class="panel"><div class="panel-title"><div><span class="eyebrow">REGIONAL WORKLOAD</span><h2>Evaluation status</h2></div></div>
+<div class="status-list"><div><span class="status-icon blue">↗</span><div><strong>{{ dashboard.evaluations_due }}</strong><small>Due in next 30 days</small></div></div><div><span class="status-icon dark">◫</span><div><strong>{{ dashboard.open_evaluations }}</strong><small>Open evaluations</small></div></div><div><span class="status-icon red">!</span><div><strong>{{ dashboard.overdue_evaluations }}</strong><small>Overdue evaluations</small></div></div></div>
+</section></div>
+<section class="panel table-panel"><div class="panel-title"><div><span class="eyebrow">RECENT ACTIVITY</span><h2>Performance evaluations</h2></div><a href="/evaluations">View all →</a></div>
+<table><thead><tr><th>Supplier / contract</th><th>Type</th><th>Region</th><th>Score</th><th>Outcome</th><th>Status</th></tr></thead><tbody>{% for e in evaluations %}<tr><td><a href="/evaluations/{{ e.id }}/view"><strong>{{ e.contract.supplier.name }}</strong></a><small class="block mono">{{ e.contract.contract_number }}</small></td><td>{{ e.contract.procurement_type }}</td><td>{{ e.contract.region }}</td><td><strong>{{ '%.1f'|format(e.total_score) }}%</strong></td><td><span class="tag outcome-{{ e.outcome|lower }}">{{ e.outcome|replace('_',' ')|title }}</span></td><td><span class="tag status-{{ e.status|lower }}">{{ e.status|title }}</span></td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

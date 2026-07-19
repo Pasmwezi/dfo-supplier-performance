@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}DFO Supplier Performance{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link href="/static/app.css" rel="stylesheet">
+</head>
+<body>
+<header class="masthead"><a class="brand" href="/"><span class="flag">DFO</span><span>Supplier Performance Management</span></a><div class="header-user"><span class="environment">{{ request.state.principal.name }} · {{ request.state.principal.roles[0]|replace('_',' ') }}</span><form method="post" action="/logout"><button type="submit" class="logout-button">Sign out</button></form></div></header>
+<div class="shell">
+<nav class="sidebar" aria-label="Primary">
+  <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Overview</a>
+  <a href="/suppliers" class="{% if request.url.path.startswith('/suppliers') %}active{% endif %}">Suppliers</a>
+  <a href="/evaluations" class="{% if request.url.path == '/evaluations' %}active{% endif %}">Evaluations</a>
+  {% if 'EVALUATOR' in request.state.principal.roles %}<a href="/evaluations/new" class="{% if request.url.path == '/evaluations/new' %}active{% endif %}">New evaluation</a>{% endif %}
+  <a href="/api/reports/performance-history.xlsx">Reports & export</a>
+  {% if request.state.principal.roles[0] == 'ADMIN' %}<div class="nav-heading">Administration</div><a href="/admin/users" class="{% if request.url.path == '/admin/users' %}active{% endif %}">User access</a>{% endif %}
+  <div class="nav-heading">Compliance</div>
+  <a href="/docs">API documentation</a>
+</nav>
+<main class="content">{% block content %}{% endblock %}</main>
+</div>
+<script src="/static/app.js"></script>{% block scripts %}{% endblock %}
+</body></html>
