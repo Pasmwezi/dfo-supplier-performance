@@ -5,7 +5,6 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
 from .main import database_url_from_env
-from .models import Base
 
 
 def main() -> None:
@@ -18,11 +17,10 @@ def main() -> None:
         existing_tables = set(inspect(connection).get_table_names())
         config.attributes["connection"] = connection
         if existing_tables and "alembic_version" not in existing_tables:
-            missing = set(Base.metadata.tables) - existing_tables
-            if missing:
-                names = ", ".join(sorted(missing))
-                raise RuntimeError(f"Refusing to stamp an incomplete legacy schema; missing tables: {names}")
-            command.stamp(config, "head")
+            raise RuntimeError(
+                "Legacy schema detected without Alembic history. Refusing automatic stamping; "
+                "an operator-approved baseline is required after independent schema verification."
+            )
         command.upgrade(config, "head")
     engine.dispose()
 

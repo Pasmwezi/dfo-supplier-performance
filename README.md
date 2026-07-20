@@ -75,13 +75,15 @@ The production stack runs PostgreSQL, one-shot Alembic migration and administrat
    docker compose --env-file .env.production -f compose.production.yml ps -a
    ```
 
+   A database containing application tables but no `alembic_version` table is treated as a legacy schema and is **not** stamped automatically. Compare every table, column, index, constraint and type with the initial migration first. Only after an operator records that verification may the baseline be set explicitly with `docker compose --env-file .env.production -f compose.production.yml run --rm migrate alembic stamp 9140020dff13`; then rerun the normal startup command. Never stamp a drifted or partially initialized database.
+
 5. Sign in with the configured bootstrap username and the value in `secrets/admin_password`, then immediately complete the mandatory password change. Do not copy that secret into tickets, chat, logs, or source control.
 
 Health endpoints are `/health` for liveness and `/ready` for database-backed readiness. Review logs with `docker compose --env-file .env.production -f compose.production.yml logs --tail=200 SERVICE`.
 
 ### Backup and restore
 
-Backups briefly quiesce Caddy and the application to keep the PostgreSQL dump and attachment archive consistent. They include SHA-256 checksums and are excluded from Git.
+Backups briefly quiesce Caddy and the application to keep the PostgreSQL dump and attachment archive consistent. Backup and restore share a non-blocking `flock` lock, include SHA-256 checksums, and are excluded from Git. Restore validates both archives, restores into staging, retains the previous database and attachment tree during cutover, and rolls back if the restored application does not become healthy.
 
 ```bash
 ENV_FILE="$PWD/.env.production" ./deploy/backup.sh

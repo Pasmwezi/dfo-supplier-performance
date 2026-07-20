@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env.production}"
 BACKUP_ROOT="${BACKUP_ROOT:-${ROOT_DIR}/backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-30}"
+LOCK_FILE="${LOCK_FILE:-${ROOT_DIR}/backups/.operations.lock}"
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${ROOT_DIR}/compose.production.yml")
 
 if [[ ! -f "${ENV_FILE}" ]]; then
@@ -17,8 +18,13 @@ if [[ ! "${RETENTION_DAYS}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-mkdir -p "${BACKUP_ROOT}"
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "${BACKUP_ROOT}" "$(dirname "${LOCK_FILE}")"
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+  printf 'Another backup or restore operation is already running.\n' >&2
+  exit 1
+fi
+stamp="$(date -u +%Y%m%dT%H%M%S%NZ)"
 temporary="$(mktemp -d "${BACKUP_ROOT}/.dfo-spm-${stamp}.XXXXXX")"
 destination="${BACKUP_ROOT}/dfo-spm-${stamp}"
 services_stopped=false

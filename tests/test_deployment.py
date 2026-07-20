@@ -38,6 +38,8 @@ def test_production_compose_is_hardened_and_persistent():
     assert set(config["secrets"]) >= {"db_password", "admin_password"}
     assert services["app"]["depends_on"]["bootstrap"]["condition"] == "service_completed_successfully"
     assert services["bootstrap"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+    assert "admin_password" not in services["app"].get("secrets", [])
+    assert "DFO_SPM_DEFAULT_ADMIN_PASSWORD_FILE" not in services["app"]["environment"]
 
 
 def test_container_image_runs_as_non_root_with_runtime_only_dependencies():
@@ -82,7 +84,18 @@ def test_backup_and_restore_scripts_have_safety_controls():
     assert "sha256sum" in backup
     assert '"${COMPOSE[@]}" stop caddy app' in backup
     assert '"${COMPOSE[@]}" up -d --wait app caddy' in backup
+    assert "flock -n" in backup
     assert "RESTORE_CONFIRM=restore" in restore
     assert "sha256sum --check" in restore
+    assert "flock -n" in restore
+    assert "pg_restore --list" in restore
+    assert "staging_db" in restore
+    assert "rollback" in restore
     for script in (ROOT / "deploy" / "backup.sh", ROOT / "deploy" / "restore.sh"):
         subprocess.run(["bash", "-n", script], check=True)
+
+
+def test_migration_does_not_automatically_stamp_legacy_schemas():
+    migration_runner = (ROOT / "app" / "migrate.py").read_text()
+    assert "command.stamp" not in migration_runner
+    assert "operator-approved baseline" in migration_runner

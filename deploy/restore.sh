@@ -5,6 +5,7 @@ umask 077
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env.production}"
 BACKUP_DIR="${1:-}"
+LOCK_FILE="${LOCK_FILE:-${ROOT_DIR}/backups/.operations.lock}"
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${ROOT_DIR}/compose.production.yml")
 
 if [[ "${RESTORE_CONFIRM:-}" != "restore" ]]; then
@@ -30,25 +31,163 @@ done
   sha256sum --check SHA256SUMS
 )
 
-"${COMPOSE[@]}" stop caddy app
+mkdir -p "$(dirname "${LOCK_FILE}")"
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+  printf 'Another backup or restore operation is already running.\n' >&2
+  exit 1
+fi
+
+operation_id="$(date -u +%Y%m%d%H%M%S%N)"
+staging_db="dfo_restore_${operation_id}"
+previous_db="dfo_previous_${operation_id}"
+staging_dir=".restore-staging-${operation_id}"
+rollback_dir=".restore-rollback-${operation_id}"
+services_stopped=false
+db_swapped=false
+files_swapped=false
+
 "${COMPOSE[@]}" up -d --wait postgres
+
+"${COMPOSE[@]}" exec -T postgres pg_restore --list < "${BACKUP_DIR}/database.dump" >/dev/null
+"${COMPOSE[@]}" run --rm --no-deps -T app python -c '
+import os, shutil, sys, tarfile
+with open(os.devnull, "wb") as sink, tarfile.open(fileobj=sys.stdin.buffer, mode="r|gz") as archive:
+    for member in archive:
+        tarfile.data_filter(member, ".")
+        source = archive.extractfile(member) if member.isfile() else None
+        if source:
+            shutil.copyfileobj(source, sink)
+' < "${BACKUP_DIR}/attachments.tar.gz"
+
+cleanup() {
+  status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    if [[ "${services_stopped}" == true ]]; then
+      if [[ "${files_swapped}" == true ]]; then
+        "${COMPOSE[@]}" run --rm --no-deps -T app python -c '
+import shutil, sys
+from pathlib import Path
+root = Path("/app/data/attachments")
+rollback = root / sys.argv[1]
+for child in list(root.iterdir()):
+    if child != rollback:
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+if rollback.exists():
+    for child in list(rollback.iterdir()):
+        child.rename(root / child.name)
+    rollback.rmdir()
+' "${rollback_dir}" || true
+      fi
+      if [[ "${db_swapped}" == true ]]; then
+        "${COMPOSE[@]}" exec -T postgres sh -ceu '
+          live=$POSTGRES_DB
+          previous=$1
+          dropdb --force --if-exists --username "$POSTGRES_USER" "$live"
+          psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+            --command "ALTER DATABASE \"$previous\" RENAME TO \"$live\""
+        ' sh "${previous_db}" || true
+      fi
+      "${COMPOSE[@]}" up -d --wait app caddy >/dev/null || true
+    fi
+    if [[ "${db_swapped}" == false ]]; then
+      "${COMPOSE[@]}" exec -T postgres sh -ceu '
+        dropdb --force --if-exists --username "$POSTGRES_USER" "$1"
+      ' sh "${staging_db}" >/dev/null 2>&1 || true
+    fi
+    "${COMPOSE[@]}" run --rm --no-deps -T app python -c '
+import shutil, sys
+from pathlib import Path
+target = Path("/app/data/attachments") / sys.argv[1]
+if target.exists():
+    shutil.rmtree(target)
+' "${staging_dir}" >/dev/null 2>&1 || true
+  fi
+  exit "${status}"
+}
+trap cleanup EXIT
 
 "${COMPOSE[@]}" exec -T postgres sh -ceu '
   export PGPASSWORD="$(cat /run/secrets/db_password)"
-  dropdb --force --if-exists --username "$POSTGRES_USER" "$POSTGRES_DB"
-  createdb --username "$POSTGRES_USER" --owner "$POSTGRES_USER" "$POSTGRES_DB"
-  pg_restore --exit-on-error --no-owner --no-acl --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"
-' < "${BACKUP_DIR}/database.dump"
+  staging=$1
+  dropdb --force --if-exists --username "$POSTGRES_USER" "$staging"
+  createdb --username "$POSTGRES_USER" --owner "$POSTGRES_USER" "$staging"
+  pg_restore --exit-on-error --no-owner --no-acl --username "$POSTGRES_USER" --dbname "$staging"
+' sh "${staging_db}" < "${BACKUP_DIR}/database.dump"
 
 "${COMPOSE[@]}" run --rm --no-deps -T app python -c '
 import shutil, sys, tarfile
 from pathlib import Path
 root = Path("/app/data/attachments")
-for child in root.iterdir():
-    shutil.rmtree(child) if child.is_dir() else child.unlink()
+target = root / sys.argv[1]
+if target.exists():
+    shutil.rmtree(target)
+target.mkdir(mode=0o700)
 with tarfile.open(fileobj=sys.stdin.buffer, mode="r|gz") as archive:
-    archive.extractall(root, filter="data")
-' < "${BACKUP_DIR}/attachments.tar.gz"
+    archive.extractall(target, filter="data")
+' "${staging_dir}" < "${BACKUP_DIR}/attachments.tar.gz"
+
+"${COMPOSE[@]}" stop caddy app
+services_stopped=true
+
+"${COMPOSE[@]}" exec -T postgres sh -ceu '
+  live=$POSTGRES_DB
+  staging=$1
+  previous=$2
+  case "$live" in *[!A-Za-z0-9_]*) printf "Unsafe database name.\n" >&2; exit 1;; esac
+  psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+    --command "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '\''$live'\'' AND pid <> pg_backend_pid()" >/dev/null
+  psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+    --command "ALTER DATABASE \"$live\" RENAME TO \"$previous\""
+  if ! psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+    --command "ALTER DATABASE \"$staging\" RENAME TO \"$live\""; then
+    psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+      --command "ALTER DATABASE \"$previous\" RENAME TO \"$live\""
+    exit 1
+  fi
+' sh "${staging_db}" "${previous_db}"
+db_swapped=true
+
+"${COMPOSE[@]}" run --rm --no-deps -T app python -c '
+import sys
+from pathlib import Path
+root = Path("/app/data/attachments")
+staging = root / sys.argv[1]
+rollback = root / sys.argv[2]
+rollback.mkdir(mode=0o700)
+originals = []
+restored = []
+try:
+    for child in list(root.iterdir()):
+        if child not in {staging, rollback}:
+            child.rename(rollback / child.name)
+            originals.append(child.name)
+    for child in list(staging.iterdir()):
+        child.rename(root / child.name)
+        restored.append(child.name)
+    staging.rmdir()
+except Exception:
+    for name in restored:
+        (root / name).rename(staging / name)
+    for name in originals:
+        (rollback / name).rename(root / name)
+    rollback.rmdir()
+    raise
+' "${staging_dir}" "${rollback_dir}"
+files_swapped=true
 
 "${COMPOSE[@]}" up -d --wait app caddy
+services_stopped=false
+
+"${COMPOSE[@]}" exec -T postgres sh -ceu '
+  dropdb --force --if-exists --username "$POSTGRES_USER" "$1"
+' sh "${previous_db}"
+"${COMPOSE[@]}" run --rm --no-deps -T app python -c '
+import shutil, sys
+from pathlib import Path
+target = Path("/app/data/attachments") / sys.argv[1]
+if target.exists():
+    shutil.rmtree(target)
+' "${rollback_dir}"
+trap - EXIT
 printf 'Restore completed from: %s\n' "${BACKUP_DIR}"

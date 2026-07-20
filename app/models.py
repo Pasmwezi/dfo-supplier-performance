@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -42,6 +42,7 @@ class UserSession(Base):
 
 class AccessAudit(Base):
     __tablename__ = "access_audit"
+    __table_args__ = (Index("ix_access_audit_login_throttle", "action", "actor", "timestamp"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(80), index=True)
     action: Mapped[str] = mapped_column(String(80), index=True)

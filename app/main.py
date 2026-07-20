@@ -225,6 +225,10 @@ def validate_runtime_settings(database_url: str) -> None:
             raise RuntimeError("DFO_SPM_SCHEMA_MANAGEMENT must be alembic for production PostgreSQL.")
 
 
+def advisory_lock_key(value: str) -> int:
+    return int.from_bytes(hashlib.blake2b(value.encode(), digest_size=8).digest(), "big", signed=True)
+
+
 def ensure_bootstrap_admin(session_factory, database_url: str) -> None:
     with session_factory() as db:
         if db.scalar(select(UserAccount).where(UserAccount.role == "ADMIN")):
@@ -337,20 +341,20 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
     def login(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
         normalized = username.strip().lower()
         source = request.client.host if request.client else "unknown"
+        source_key = source[:200]
         source_detail = f"source={source}"
         throttle_window = int(os.getenv("DFO_SPM_LOGIN_THROTTLE_SECONDS", "900"))
         max_attempts = int(os.getenv("DFO_SPM_LOGIN_MAX_ATTEMPTS", "5"))
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": advisory_lock_key(source_key)})
         recent_failures = db.scalar(
             select(func.count(AccessAudit.id)).where(
-                AccessAudit.username == normalized[:80],
                 AccessAudit.action == "LOGIN_FAILED",
-                AccessAudit.detail == source_detail,
+                AccessAudit.actor == source_key,
                 AccessAudit.timestamp >= utcnow() - timedelta(seconds=throttle_window),
             )
         ) or 0
         if recent_failures >= max_attempts:
-            db.add(AccessAudit(username=normalized[:80], action="LOGIN_THROTTLED", detail=source_detail))
-            db.commit()
             return TEMPLATES.TemplateResponse(
                 request,
                 "login.html",
@@ -360,7 +364,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
             )
         account = db.scalar(select(UserAccount).where(UserAccount.username == normalized))
         if not account or not account.active or not verify_password(password, account.password_hash):
-            db.add(AccessAudit(username=normalized[:80], action="LOGIN_FAILED", detail=source_detail))
+            db.add(AccessAudit(username=normalized[:80], action="LOGIN_FAILED", actor=source_key, detail=source_detail))
             db.commit()
             return TEMPLATES.TemplateResponse(request, "login.html", {"error": "Invalid username or password."}, status_code=401)
         token = new_session_token()

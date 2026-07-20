@@ -112,8 +112,6 @@ services:
       DFO_SPM_DB_NAME: ${DFO_SPM_DB_NAME:-dfo_spm}
       DFO_SPM_DB_USER: ${DFO_SPM_DB_USER:-dfo_spm}
       DFO_SPM_DB_PASSWORD_FILE: /run/secrets/db_password
-      DFO_SPM_DEFAULT_ADMIN_USERNAME: ${DFO_SPM_DEFAULT_ADMIN_USERNAME:-admin}
-      DFO_SPM_DEFAULT_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
       DFO_SPM_SCHEMA_MANAGEMENT: alembic
       DFO_SPM_BOOTSTRAP_ON_START: "false"
       DFO_SPM_PREPARE_ATTACHMENTS: "true"
@@ -123,7 +121,6 @@ services:
       DFO_SPM_LOGIN_THROTTLE_SECONDS: "900"
     secrets:
       - db_password
-      - admin_password
     volumes:
       - attachments:/app/data/attachments
     expose:

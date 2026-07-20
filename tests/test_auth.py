@@ -2,9 +2,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import Session
 
 from app.auth import hash_password, verify_password
 from app.main import create_app, database_url_from_env, validate_runtime_settings
+from app.models import AccessAudit
 
 
 def test_password_hash_is_salted_and_verifiable():
@@ -173,12 +176,20 @@ def test_non_admin_cannot_provision_users(tmp_path: Path):
 
 
 def test_login_is_throttled_after_repeated_failures(tmp_path: Path):
-    app = create_app(f"sqlite:///{tmp_path / 'throttle.db'}", seed=False)
+    database_url = f"sqlite:///{tmp_path / 'throttle.db'}"
+    app = create_app(database_url, seed=False)
     client = TestClient(app, follow_redirects=False)
 
-    for _ in range(5):
-        assert client.post("/login", data={"username": "admin", "password": "wrong-password"}).status_code == 401
+    for attempt in range(5):
+        assert client.post("/login", data={"username": f"unknown-{attempt}", "password": "wrong-password"}).status_code == 401
 
     blocked = client.post("/login", data={"username": "admin", "password": "admin123@"})
     assert blocked.status_code == 429
     assert blocked.headers["retry-after"] == "900"
+
+    for _ in range(10):
+        assert client.post("/login", data={"username": "another-user", "password": "wrong-password"}).status_code == 429
+
+    with Session(create_engine(database_url)) as db:
+        assert db.scalar(select(func.count(AccessAudit.id)).where(AccessAudit.action == "LOGIN_FAILED")) == 5
+        assert db.scalar(select(func.count(AccessAudit.id)).where(AccessAudit.action == "LOGIN_THROTTLED")) == 0
