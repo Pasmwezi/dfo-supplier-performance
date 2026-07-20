@@ -1,0 +1,14 @@
+.git
+.github
+.env
+.env.*
+!.env.production.example
+secrets
+backups
+.deps
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+*.db
+data/attachments

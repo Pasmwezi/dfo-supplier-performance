@@ -10,13 +10,15 @@ from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.exc import IntegrityError
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from sqlalchemy import create_engine, func, select, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from .domain import (
@@ -171,8 +173,29 @@ def calculate(model: str, scores: dict[str, float | None], weights: dict[str, fl
     return ae_result(scores, selected_weights), dict(selected_weights)
 
 
+def secret_from_env(name: str) -> str | None:
+    secret_file = os.getenv(f"{name}_FILE")
+    if secret_file:
+        try:
+            value = Path(secret_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError(f"Unable to read {name}_FILE.") from exc
+        if not value:
+            raise RuntimeError(f"{name}_FILE is empty.")
+        return value
+    return os.getenv(name) or None
+
+
 def database_url_from_env() -> str:
     database_url = os.getenv("DFO_SPM_DATABASE_URL")
+    if not database_url and os.getenv("DFO_SPM_DB_PASSWORD_FILE"):
+        password = secret_from_env("DFO_SPM_DB_PASSWORD")
+        user = os.getenv("DFO_SPM_DB_USER", "dfo_spm")
+        host = os.getenv("DFO_SPM_DB_HOST", "postgres")
+        port = os.getenv("DFO_SPM_DB_PORT", "5432")
+        name = os.getenv("DFO_SPM_DB_NAME", "dfo_spm")
+        if password:
+            database_url = f"postgresql+psycopg://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{quote(name, safe='')}"
     if not database_url:
         raise RuntimeError("DFO_SPM_DATABASE_URL is required and must identify a PostgreSQL database.")
     if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
@@ -181,7 +204,7 @@ def database_url_from_env() -> str:
 
 
 def bootstrap_admin_password(database_url: str) -> str:
-    password = os.getenv("DFO_SPM_DEFAULT_ADMIN_PASSWORD")
+    password = secret_from_env("DFO_SPM_DEFAULT_ADMIN_PASSWORD")
     if not password and database_url.startswith("sqlite"):
         return "admin123@"
     if not password:
@@ -192,14 +215,40 @@ def bootstrap_admin_password(database_url: str) -> str:
     return password
 
 
+def validate_runtime_settings(database_url: str) -> None:
+    if os.getenv("DFO_SPM_ENV", "development").lower() == "production":
+        if os.getenv("DFO_SPM_COOKIE_SECURE", "false").lower() != "true":
+            raise RuntimeError("DFO_SPM_COOKIE_SECURE must be true in production.")
+        if not os.getenv("DFO_SPM_TRUSTED_HOSTS", "").strip():
+            raise RuntimeError("DFO_SPM_TRUSTED_HOSTS is required in production.")
+        if not database_url.startswith("sqlite") and os.getenv("DFO_SPM_SCHEMA_MANAGEMENT", "").lower() != "alembic":
+            raise RuntimeError("DFO_SPM_SCHEMA_MANAGEMENT must be alembic for production PostgreSQL.")
+
+
+def ensure_bootstrap_admin(session_factory, database_url: str) -> None:
+    with session_factory() as db:
+        if db.scalar(select(UserAccount).where(UserAccount.role == "ADMIN")):
+            return
+        admin_username = os.getenv("DFO_SPM_DEFAULT_ADMIN_USERNAME", "admin").strip().lower()
+        admin_password = bootstrap_admin_password(database_url)
+        db.add(UserAccount(username=admin_username, display_name="System Administrator", password_hash=hash_password(admin_password), role="ADMIN", must_change_password=True, created_by="SYSTEM"))
+        db.add(AccessAudit(username=admin_username, action="ADMIN_BOOTSTRAPPED", actor="SYSTEM", detail="Forced password change enabled"))
+        db.commit()
+
+
 def create_app(database_url: str | None = None, seed: bool = False, auth_tokens: dict | None = None) -> FastAPI:
     database_url = database_url or database_url_from_env()
+    validate_runtime_settings(database_url)
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    engine = create_engine(database_url, connect_args=connect_args)
+    engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-    Base.metadata.create_all(engine)
+    if os.getenv("DFO_SPM_SCHEMA_MANAGEMENT", "application").lower() != "alembic":
+        Base.metadata.create_all(engine)
 
     app = FastAPI(title="DFO Supplier Performance Management System", version="1.0.0")
+    trusted_hosts = [host.strip() for host in os.getenv("DFO_SPM_TRUSTED_HOSTS", "").split(",") if host.strip()]
+    if trusted_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
     app.state.engine = engine
     app.state.session_factory = SessionLocal
     upload_dir = BASE_DIR.parent / "data" / "attachments"
@@ -259,7 +308,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
 
     @app.middleware("http")
     async def security_boundary(request: Request, call_next):
-        public = request.url.path in {"/health", "/login"} or request.url.path.startswith("/static/")
+        public = request.url.path in {"/health", "/ready", "/login"} or request.url.path.startswith("/static/")
         principal = None if public else resolve_principal(request, request.headers.get("Authorization"))
         request.state.principal = principal
         if not public and principal is None:
@@ -276,6 +325,8 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Cache-Control"] = "no-store"
+        if os.getenv("DFO_SPM_COOKIE_SECURE", "false").lower() == "true":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
     @app.get("/login", response_class=HTMLResponse)
@@ -285,9 +336,31 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
     @app.post("/login")
     def login(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
         normalized = username.strip().lower()
+        source = request.client.host if request.client else "unknown"
+        source_detail = f"source={source}"
+        throttle_window = int(os.getenv("DFO_SPM_LOGIN_THROTTLE_SECONDS", "900"))
+        max_attempts = int(os.getenv("DFO_SPM_LOGIN_MAX_ATTEMPTS", "5"))
+        recent_failures = db.scalar(
+            select(func.count(AccessAudit.id)).where(
+                AccessAudit.username == normalized[:80],
+                AccessAudit.action == "LOGIN_FAILED",
+                AccessAudit.detail == source_detail,
+                AccessAudit.timestamp >= utcnow() - timedelta(seconds=throttle_window),
+            )
+        ) or 0
+        if recent_failures >= max_attempts:
+            db.add(AccessAudit(username=normalized[:80], action="LOGIN_THROTTLED", detail=source_detail))
+            db.commit()
+            return TEMPLATES.TemplateResponse(
+                request,
+                "login.html",
+                {"error": "Too many sign-in attempts. Try again later."},
+                status_code=429,
+                headers={"Retry-After": str(throttle_window)},
+            )
         account = db.scalar(select(UserAccount).where(UserAccount.username == normalized))
         if not account or not account.active or not verify_password(password, account.password_hash):
-            db.add(AccessAudit(username=normalized[:80], action="LOGIN_FAILED", detail="Invalid credentials or inactive account"))
+            db.add(AccessAudit(username=normalized[:80], action="LOGIN_FAILED", detail=source_detail))
             db.commit()
             return TEMPLATES.TemplateResponse(request, "login.html", {"error": "Invalid username or password."}, status_code=401)
         token = new_session_token()
@@ -344,13 +417,10 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         response.delete_cookie("dfo_spm_session")
         return response
 
+    if os.getenv("DFO_SPM_BOOTSTRAP_ON_START", "true").lower() == "true":
+        ensure_bootstrap_admin(SessionLocal, database_url)
+
     with SessionLocal() as db:
-        if not db.scalar(select(UserAccount).where(UserAccount.role == "ADMIN")):
-            admin_username = os.getenv("DFO_SPM_DEFAULT_ADMIN_USERNAME", "admin").strip().lower()
-            admin_password = bootstrap_admin_password(database_url)
-            db.add(UserAccount(username=admin_username, display_name="System Administrator", password_hash=hash_password(admin_password), role="ADMIN", must_change_password=True, created_by="SYSTEM"))
-            db.add(AccessAudit(username=admin_username, action="ADMIN_BOOTSTRAPPED", actor="SYSTEM", detail="Forced password change enabled"))
-            db.commit()
         for index, (token, principal) in enumerate((auth_tokens or {}).items(), start=1):
             username = f"test-user-{index}"
             account = db.scalar(select(UserAccount).where(UserAccount.username == username))
@@ -369,6 +439,15 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.get("/ready")
+    def ready():
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            return JSONResponse({"status": "unavailable"}, status_code=503)
+        return {"status": "ready"}
 
     @app.get("/api/admin/users")
     def list_users(admin: str = Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):

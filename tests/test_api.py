@@ -45,6 +45,7 @@ def test_supplier_profile_contract_counts_update_from_contract_records(tmp_path)
 def test_health_and_dashboard(tmp_path):
     client = make_client(tmp_path)
     assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/ready").json() == {"status": "ready"}
     response = client.get("/api/dashboard")
     assert response.status_code == 200
     assert set(response.json()) >= {"active_suppliers", "active_contracts", "average_performance", "risk_distribution"}

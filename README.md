@@ -30,7 +30,7 @@ docker compose up -d postgres
 ./run.sh
 ```
 
-Open `http://<server-ip>:8088` (or <http://127.0.0.1:8088> locally). The initial username and temporary password come from `DFO_SPM_DEFAULT_ADMIN_USERNAME` and `DFO_SPM_DEFAULT_ADMIN_PASSWORD`; startup refuses to create the first PostgreSQL administrator if the password is missing or fails policy. The administrator is forced to select a new password before any supplier-performance data or administration page is accessible, and changing it revokes every older session. The service binds to `0.0.0.0:8088` by default and must be protected by firewall and approved TLS ingress controls. The administrator then creates separate evaluator, reviewer, approver and decision-maker accounts under **Administration → User access**; each new account receives a temporary password and must replace it at first sign-in.
+Open <http://127.0.0.1:8088>. The initial username and temporary password come from `DFO_SPM_DEFAULT_ADMIN_USERNAME` and `DFO_SPM_DEFAULT_ADMIN_PASSWORD`; startup refuses to create the first PostgreSQL administrator if the password is missing or fails policy. The administrator is forced to select a new password before any supplier-performance data or administration page is accessible, and changing it revokes every older session. The development launcher binds to loopback by default; external access must use the production TLS ingress below. The administrator then creates separate evaluator, reviewer, approver and decision-maker accounts under **Administration → User access**; each new account receives a temporary password and must replace it at first sign-in.
 
 Run tests:
 
@@ -46,6 +46,49 @@ python3 -m venv .venv
 pip install -r requirements.txt
 uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8088
 ```
+
+## Docker production deployment
+
+The production stack runs PostgreSQL, one-shot Alembic migration and administrator-bootstrap jobs, the non-root FastAPI service, and Caddy TLS ingress. PostgreSQL and Uvicorn remain on an internal network; only Caddy publishes ports.
+
+1. Point the deployment domain to the host and allow inbound TCP 80/443 and UDP 443.
+2. Create the non-secret environment file and edit `APP_DOMAIN` and `CADDY_EMAIL`:
+
+   ```bash
+   cp .env.production.example .env.production
+   ```
+
+3. Generate local Docker secrets without printing them:
+
+   ```bash
+   mkdir -p secrets
+   umask 077
+   openssl rand -hex 32 > secrets/db_password
+   { printf 'Admin!'; openssl rand -base64 24 | tr -d '\n'; printf '\n'; } > secrets/admin_password
+   chmod 600 secrets/db_password secrets/admin_password
+   ```
+
+4. Build, migrate, bootstrap, and start the stack:
+
+   ```bash
+   docker compose --env-file .env.production -f compose.production.yml up -d --build --wait
+   docker compose --env-file .env.production -f compose.production.yml ps -a
+   ```
+
+5. Sign in with the configured bootstrap username and the value in `secrets/admin_password`, then immediately complete the mandatory password change. Do not copy that secret into tickets, chat, logs, or source control.
+
+Health endpoints are `/health` for liveness and `/ready` for database-backed readiness. Review logs with `docker compose --env-file .env.production -f compose.production.yml logs --tail=200 SERVICE`.
+
+### Backup and restore
+
+Backups briefly quiesce Caddy and the application to keep the PostgreSQL dump and attachment archive consistent. They include SHA-256 checksums and are excluded from Git.
+
+```bash
+ENV_FILE="$PWD/.env.production" ./deploy/backup.sh
+RESTORE_CONFIRM=restore ENV_FILE="$PWD/.env.production" ./deploy/restore.sh backups/dfo-spm-YYYYMMDDTHHMMSSZ
+```
+
+Copy encrypted backups off-host and schedule restore drills. Before upgrades, run a backup, pull the reviewed revision, and rerun the production `up -d --build --wait` command; Alembic applies pending schema revisions before traffic reaches the app.
 
 ## Data and workflow
 

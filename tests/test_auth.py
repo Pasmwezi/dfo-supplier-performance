@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import hash_password, verify_password
-from app.main import create_app, database_url_from_env
+from app.main import create_app, database_url_from_env, validate_runtime_settings
 
 
 def test_password_hash_is_salted_and_verifiable():
@@ -23,6 +23,19 @@ def test_runtime_requires_postgresql_database_url(monkeypatch):
     assert database_url_from_env().startswith("postgresql+psycopg://")
 
 
+def test_runtime_builds_database_url_from_docker_secret(tmp_path, monkeypatch):
+    secret = tmp_path / "database-password"
+    secret.write_text("p@ss:/?#%\n")
+    monkeypatch.delenv("DFO_SPM_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DFO_SPM_DB_PASSWORD_FILE", str(secret))
+    monkeypatch.setenv("DFO_SPM_DB_USER", "dfo user")
+    monkeypatch.setenv("DFO_SPM_DB_HOST", "postgres")
+    monkeypatch.setenv("DFO_SPM_DB_PORT", "5432")
+    monkeypatch.setenv("DFO_SPM_DB_NAME", "dfo-spm")
+
+    assert database_url_from_env() == "postgresql+psycopg://dfo%20user:p%40ss%3A%2F%3F%23%25@postgres:5432/dfo-spm"
+
+
 def test_postgresql_bootstrap_requires_explicit_policy_compliant_password(monkeypatch):
     from app.main import bootstrap_admin_password
 
@@ -34,6 +47,17 @@ def test_postgresql_bootstrap_requires_explicit_policy_compliant_password(monkey
         bootstrap_admin_password("postgresql+psycopg://user:pass@db.example/dfo")
     monkeypatch.setenv("DFO_SPM_DEFAULT_ADMIN_PASSWORD", "StrongBootstrap!2026")
     assert bootstrap_admin_password("postgresql+psycopg://user:pass@db.example/dfo") == "StrongBootstrap!2026"
+
+
+def test_postgresql_bootstrap_reads_password_from_docker_secret(tmp_path, monkeypatch):
+    from app.main import bootstrap_admin_password
+
+    secret = tmp_path / "admin-password"
+    secret.write_text("StrongSecret!2026\n")
+    monkeypatch.delenv("DFO_SPM_DEFAULT_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("DFO_SPM_DEFAULT_ADMIN_PASSWORD_FILE", str(secret))
+
+    assert bootstrap_admin_password("postgresql+psycopg://user:pass@db.example/dfo") == "StrongSecret!2026"
 
 
 def test_default_admin_must_change_password_before_access(tmp_path: Path):
@@ -57,6 +81,43 @@ def test_default_admin_must_change_password_before_access(tmp_path: Path):
     assert changed.headers["location"] == "/"
     assert client.get("/admin/users").status_code == 200
     assert stale_session.get("/").headers["location"] == "/login"
+
+
+def test_secure_cookie_mode_emits_hsts_header(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DFO_SPM_COOKIE_SECURE", "true")
+    app = create_app(f"sqlite:///{tmp_path / 'secure.db'}", seed=False)
+    client = TestClient(app)
+
+    assert client.get("/health").headers["strict-transport-security"] == "max-age=31536000; includeSubDomains"
+
+
+def test_production_mode_refuses_insecure_cookies(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DFO_SPM_ENV", "production")
+    monkeypatch.setenv("DFO_SPM_COOKIE_SECURE", "false")
+    monkeypatch.setenv("DFO_SPM_TRUSTED_HOSTS", "spm.example.test")
+
+    with pytest.raises(RuntimeError, match="COOKIE_SECURE"):
+        create_app(f"sqlite:///{tmp_path / 'insecure.db'}", seed=False)
+
+
+def test_production_postgresql_requires_alembic_schema_management(monkeypatch):
+    monkeypatch.setenv("DFO_SPM_ENV", "production")
+    monkeypatch.setenv("DFO_SPM_COOKIE_SECURE", "true")
+    monkeypatch.setenv("DFO_SPM_TRUSTED_HOSTS", "spm.example.test")
+    monkeypatch.delenv("DFO_SPM_SCHEMA_MANAGEMENT", raising=False)
+
+    with pytest.raises(RuntimeError, match="SCHEMA_MANAGEMENT"):
+        validate_runtime_settings("postgresql+psycopg://user:pass@postgres/dfo")
+
+
+def test_production_mode_rejects_untrusted_hosts(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DFO_SPM_ENV", "production")
+    monkeypatch.setenv("DFO_SPM_COOKIE_SECURE", "true")
+    monkeypatch.setenv("DFO_SPM_TRUSTED_HOSTS", "spm.example.test")
+    app = create_app(f"sqlite:///{tmp_path / 'trusted-host.db'}", seed=False)
+
+    assert TestClient(app, base_url="https://spm.example.test").get("/health").status_code == 200
+    assert TestClient(app, base_url="https://evil.example.test").get("/health").status_code == 400
 
 
 def test_admin_provisions_role_user_with_forced_password_change(tmp_path: Path):
@@ -109,3 +170,15 @@ def test_non_admin_cannot_provision_users(tmp_path: Path):
     assert reviewer.post("/api/admin/users", json={
         "username": "approver.one", "display_name": "Approver One", "role": "APPROVER", "temporary_password": "TemporaryPassword!2026"
     }).status_code == 403
+
+
+def test_login_is_throttled_after_repeated_failures(tmp_path: Path):
+    app = create_app(f"sqlite:///{tmp_path / 'throttle.db'}", seed=False)
+    client = TestClient(app, follow_redirects=False)
+
+    for _ in range(5):
+        assert client.post("/login", data={"username": "admin", "password": "wrong-password"}).status_code == 401
+
+    blocked = client.post("/login", data={"username": "admin", "password": "admin123@"})
+    assert blocked.status_code == 429
+    assert blocked.headers["retry-after"] == "900"
