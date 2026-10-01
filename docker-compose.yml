@@ -3,18 +3,19 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DFO_SPM_DB_NAME:-dfo_spm}
-      POSTGRES_USER: ${DFO_SPM_DB_USER:-dfo_spm}
-      POSTGRES_PASSWORD: ${DFO_SPM_DB_PASSWORD:?Set DFO_SPM_DB_PASSWORD in .env}
+      POSTGRES_DB: ${SPM_DB_NAME:-${DFO_SPM_DB_NAME:-spm}}
+      POSTGRES_USER: ${SPM_DB_USER:-${DFO_SPM_DB_USER:-spm}}
+      POSTGRES_PASSWORD: ${SPM_DB_PASSWORD:-${DFO_SPM_DB_PASSWORD:?Set SPM_DB_PASSWORD in .env}}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
-      - dfo-spm-postgres:/var/lib/postgresql/data
+      - spm-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DFO_SPM_DB_USER:-dfo_spm} -d ${DFO_SPM_DB_NAME:-dfo_spm}"]
+      test: ["CMD-SHELL", "pg_isready -U ${SPM_DB_USER:-${DFO_SPM_DB_USER:-spm}} -d ${SPM_DB_NAME:-${DFO_SPM_DB_NAME:-spm}}"]
       interval: 5s
       timeout: 5s
       retries: 12
 
 volumes:
-  dfo-spm-postgres:
+  spm-postgres:
+    name: ${SPM_DEV_VOLUME_NAME:-${COMPOSE_PROJECT_NAME:-dfo-supplier-performance}_dfo-spm-postgres}

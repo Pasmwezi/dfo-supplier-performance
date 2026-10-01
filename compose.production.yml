@@ -3,15 +3,15 @@ services:
     image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DFO_SPM_DB_NAME:-dfo_spm}
-      POSTGRES_USER: ${DFO_SPM_DB_USER:-dfo_spm}
+      POSTGRES_DB: ${SPM_DB_NAME:-${DFO_SPM_DB_NAME:-spm}}
+      POSTGRES_USER: ${SPM_DB_USER:-${DFO_SPM_DB_USER:-spm}}
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
     secrets:
       - db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DFO_SPM_DB_USER:-dfo_spm} -d ${DFO_SPM_DB_NAME:-dfo_spm}"]
+      test: ["CMD-SHELL", "pg_isready -U ${SPM_DB_USER:-${DFO_SPM_DB_USER:-spm}} -d ${SPM_DB_NAME:-${DFO_SPM_DB_NAME:-spm}}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -27,7 +27,7 @@ services:
         max-file: "5"
 
   migrate:
-    image: dfo-supplier-performance:${IMAGE_TAG:-latest}
+    image: supplier-performance:${IMAGE_TAG:-latest}
     command: ["python", "-m", "app.migrate"]
     restart: "no"
     init: true
@@ -35,11 +35,11 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DFO_SPM_DB_HOST: postgres
-      DFO_SPM_DB_PORT: "5432"
-      DFO_SPM_DB_NAME: ${DFO_SPM_DB_NAME:-dfo_spm}
-      DFO_SPM_DB_USER: ${DFO_SPM_DB_USER:-dfo_spm}
-      DFO_SPM_DB_PASSWORD_FILE: /run/secrets/db_password
+      SPM_DB_HOST: postgres
+      SPM_DB_PORT: "5432"
+      SPM_DB_NAME: ${SPM_DB_NAME:-${DFO_SPM_DB_NAME:-spm}}
+      SPM_DB_USER: ${SPM_DB_USER:-${DFO_SPM_DB_USER:-spm}}
+      SPM_DB_PASSWORD_FILE: /run/secrets/db_password
     secrets:
       - db_password
     read_only: true
@@ -59,7 +59,7 @@ services:
     logging: *default-logging
 
   bootstrap:
-    image: dfo-supplier-performance:${IMAGE_TAG:-latest}
+    image: supplier-performance:${IMAGE_TAG:-latest}
     command: ["python", "-m", "app.bootstrap"]
     restart: "no"
     init: true
@@ -67,13 +67,13 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DFO_SPM_DB_HOST: postgres
-      DFO_SPM_DB_PORT: "5432"
-      DFO_SPM_DB_NAME: ${DFO_SPM_DB_NAME:-dfo_spm}
-      DFO_SPM_DB_USER: ${DFO_SPM_DB_USER:-dfo_spm}
-      DFO_SPM_DB_PASSWORD_FILE: /run/secrets/db_password
-      DFO_SPM_DEFAULT_ADMIN_USERNAME: ${DFO_SPM_DEFAULT_ADMIN_USERNAME:-admin}
-      DFO_SPM_DEFAULT_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      SPM_DB_HOST: postgres
+      SPM_DB_PORT: "5432"
+      SPM_DB_NAME: ${SPM_DB_NAME:-${DFO_SPM_DB_NAME:-spm}}
+      SPM_DB_USER: ${SPM_DB_USER:-${DFO_SPM_DB_USER:-spm}}
+      SPM_DB_PASSWORD_FILE: /run/secrets/db_password
+      SPM_DEFAULT_ADMIN_USERNAME: ${SPM_DEFAULT_ADMIN_USERNAME:-${DFO_SPM_DEFAULT_ADMIN_USERNAME:-admin}}
+      SPM_DEFAULT_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
     secrets:
       - db_password
       - admin_password
@@ -97,7 +97,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: dfo-supplier-performance:${IMAGE_TAG:-latest}
+    image: supplier-performance:${IMAGE_TAG:-latest}
     restart: unless-stopped
     init: true
     depends_on:
@@ -106,19 +106,21 @@ services:
       bootstrap:
         condition: service_completed_successfully
     environment:
-      DFO_SPM_ENV: production
-      DFO_SPM_DB_HOST: postgres
-      DFO_SPM_DB_PORT: "5432"
-      DFO_SPM_DB_NAME: ${DFO_SPM_DB_NAME:-dfo_spm}
-      DFO_SPM_DB_USER: ${DFO_SPM_DB_USER:-dfo_spm}
-      DFO_SPM_DB_PASSWORD_FILE: /run/secrets/db_password
-      DFO_SPM_SCHEMA_MANAGEMENT: alembic
-      DFO_SPM_BOOTSTRAP_ON_START: "false"
-      DFO_SPM_PREPARE_ATTACHMENTS: "true"
-      DFO_SPM_COOKIE_SECURE: "true"
-      DFO_SPM_TRUSTED_HOSTS: ${APP_DOMAIN},localhost,app
-      DFO_SPM_LOGIN_MAX_ATTEMPTS: "5"
-      DFO_SPM_LOGIN_THROTTLE_SECONDS: "900"
+      SPM_ENV: production
+      SPM_DB_HOST: postgres
+      SPM_DB_PORT: "5432"
+      SPM_DB_NAME: ${SPM_DB_NAME:-${DFO_SPM_DB_NAME:-spm}}
+      SPM_DB_USER: ${SPM_DB_USER:-${DFO_SPM_DB_USER:-spm}}
+      SPM_DB_PASSWORD_FILE: /run/secrets/db_password
+      SPM_SCHEMA_MANAGEMENT: alembic
+      SPM_BOOTSTRAP_ON_START: "false"
+      SPM_PREPARE_ATTACHMENTS: "true"
+      SPM_ATTACHMENT_DIR: /app/data/attachments
+      SPM_COOKIE_SECURE: "true"
+      SPM_TRUSTED_HOSTS: ${APP_DOMAIN},localhost,app
+      SPM_LOGIN_MAX_ATTEMPTS: ${SPM_LOGIN_MAX_ATTEMPTS:-${DFO_SPM_LOGIN_MAX_ATTEMPTS:-5}}
+      SPM_LOGIN_SOURCE_MAX_ATTEMPTS: ${SPM_LOGIN_SOURCE_MAX_ATTEMPTS:-${DFO_SPM_LOGIN_SOURCE_MAX_ATTEMPTS:-50}}
+      SPM_LOGIN_THROTTLE_SECONDS: ${SPM_LOGIN_THROTTLE_SECONDS:-${DFO_SPM_LOGIN_THROTTLE_SECONDS:-900}}
     secrets:
       - db_password
     volumes:
@@ -141,6 +143,7 @@ services:
     cap_add:
       - CHOWN
       - DAC_OVERRIDE
+      - KILL
       - SETGID
       - SETUID
     networks:
@@ -155,6 +158,8 @@ services:
         condition: service_healthy
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-${APP_DOMAIN}}
+      CADDY_HEALTH_URL: ${CADDY_HEALTH_URL:-https://${APP_DOMAIN}}
       CADDY_EMAIL: ${CADDY_EMAIL:-}
     ports:
       - target: 80
@@ -174,7 +179,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     healthcheck:
-      test: ["CMD", "curl", "-fk", "https://localhost/health"]
+      test: ["CMD-SHELL", "curl -fkSs --resolve \"$${APP_DOMAIN}:443:127.0.0.1\" -H \"Host: $${APP_DOMAIN}\" \"$${CADDY_HEALTH_URL}/health\""]
       interval: 15s
       timeout: 5s
       retries: 5

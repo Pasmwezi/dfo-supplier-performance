@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Evaluation EV-{{ evaluation.id }} · DFO SPM{% endblock %}
+{% block title %}Evaluation EV-{{ evaluation.id }} · SPM{% endblock %}
 {% block content %}
 <div class="page-heading">
   <div><div class="eyebrow">EV-{{ '%05d'|format(evaluation.id) }} · VERSION {{ evaluation.version }}</div><h1>{{ evaluation.contract.supplier.name }}</h1><p class="mono">{{ evaluation.contract.contract_number }} · {{ evaluation.contract.procurement_type }} · {{ evaluation.contract.region }}</p></div>
@@ -41,6 +41,7 @@
 <section class="panel project-record">
   <div class="panel-title"><div><span class="eyebrow">PROJECT RECORD · DOSSIER DU PROJET</span><h2>Project and contract information</h2></div></div>
   <div class="record-grid">
+    <div><small>Organization / department</small><strong>{{ evaluation.contract.department }}</strong></div>
     <div><small>Contract number</small><strong class="mono">{{ evaluation.contract.contract_number }}</strong></div>
     <div><small>Project number</small><strong class="mono">{{ evaluation.contract.project_number or 'Not recorded' }}</strong></div>
     <div><small>Client reference number</small><strong>{{ details.client_reference_number or 'Not recorded' if details else 'Not recorded' }}</strong></div>

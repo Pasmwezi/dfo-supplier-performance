@@ -3,10 +3,12 @@ from io import BytesIO
 
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
+from sqlalchemy import UniqueConstraint
 
 from app.domain import CONSTRUCTION_CRITERIA
 from app.exports import performance_history_xlsx
-from app.main import create_app
+from app.main import create_app, locked_get
+from app.models import Evaluation, EvaluationVersion
 
 
 def make_client(tmp_path: Path):
@@ -18,6 +20,29 @@ def make_client(tmp_path: Path):
     }
     app = create_app(f"sqlite:///{tmp_path / 'test.db'}", seed=False, auth_tokens=tokens)
     return TestClient(app, headers={"Authorization": "Bearer test-token"})
+
+
+def test_workflow_mutations_load_records_with_a_database_row_lock():
+    class CapturingSession:
+        statement = None
+
+        def scalar(self, statement):
+            self.statement = statement
+            return object()
+
+    session = CapturingSession()
+    locked_get(session, Evaluation, 42)
+
+    assert session.statement._for_update_arg is not None
+
+
+def test_evaluation_versions_are_unique_per_evaluation_and_version_number():
+    constraints = [
+        constraint
+        for constraint in EvaluationVersion.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    ]
+    assert any({column.name for column in constraint.columns} == {"evaluation_id", "version"} for constraint in constraints)
 
 
 def test_supplier_profile_contract_counts_update_from_contract_records(tmp_path):

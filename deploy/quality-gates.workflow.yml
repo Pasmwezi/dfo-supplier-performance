@@ -30,6 +30,6 @@ jobs:
       - name: Validate production Compose
         run: docker compose --env-file .env.production.example -f compose.production.yml config -q
       - name: Build production image
-        run: docker build --tag dfo-supplier-performance:ci .
+        run: docker build --tag supplier-performance:ci .
       - name: Validate deployment scripts
         run: bash -n deploy/backup.sh deploy/restore.sh deploy/docker-entrypoint.sh

@@ -75,7 +75,7 @@ def correspondence_pdf(context: dict) -> bytes:
     width, height = LETTER
     y = height - 60
     pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(54, y, "Fisheries and Oceans Canada")
+    pdf.drawString(54, y, context.get("organization") or "Contracting Organization")
     y -= 28
     pdf.setFont("Helvetica", 10)
     pdf.drawString(54, y, context["date"])

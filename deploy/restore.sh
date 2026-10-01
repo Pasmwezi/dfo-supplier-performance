@@ -20,7 +20,7 @@ if [[ -z "${BACKUP_DIR}" || ! -d "${BACKUP_DIR}" ]]; then
   printf 'Usage: RESTORE_CONFIRM=restore %s <backup-directory>\n' "$0" >&2
   exit 1
 fi
-for required in database.dump attachments.tar.gz SHA256SUMS; do
+for required in database.dump attachments.tar.gz SHA256SUMS MANIFEST; do
   if [[ ! -f "${BACKUP_DIR}/${required}" ]]; then
     printf 'Backup is missing %s.\n' "${required}" >&2
     exit 1
@@ -31,6 +31,29 @@ done
   sha256sum --check SHA256SUMS
 )
 
+manifest_value() {
+  local key="$1"
+  local line
+  line="$(grep -E "^${key}=[A-Za-z0-9_.-]+$" "${BACKUP_DIR}/MANIFEST" || true)"
+  if [[ -z "${line}" || "${line}" == *$'\n'* ]]; then
+    printf 'Backup manifest has an invalid or duplicate %s entry.\n' "${key}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${line#*=}"
+}
+compose_project="$("${COMPOSE[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+backup_project="$(manifest_value compose_project)"
+backup_revision="$(manifest_value schema_revision)"
+expected_revision="$("${COMPOSE[@]}" run --rm --no-deps -T app python -c 'from app.main import EXPECTED_SCHEMA_REVISION; print(EXPECTED_SCHEMA_REVISION)')"
+if [[ "${backup_project}" != "${compose_project}" ]]; then
+  printf 'Backup belongs to a different Compose project.\n' >&2
+  exit 1
+fi
+if [[ "${backup_revision}" != "${expected_revision}" ]]; then
+  printf 'Backup schema revision is not supported by this application image.\n' >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "${LOCK_FILE}")"
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -39,8 +62,9 @@ if ! flock -n 9; then
 fi
 
 operation_id="$(date -u +%Y%m%d%H%M%S%N)"
-staging_db="dfo_restore_${operation_id}"
-previous_db="dfo_previous_${operation_id}"
+staging_db="spm_restore_${operation_id}"
+previous_db="spm_previous_${operation_id}"
+failed_db="spm_failed_${operation_id}"
 staging_dir=".restore-staging-${operation_id}"
 rollback_dir=".restore-rollback-${operation_id}"
 services_stopped=false
@@ -62,10 +86,11 @@ with open(os.devnull, "wb") as sink, tarfile.open(fileobj=sys.stdin.buffer, mode
 
 cleanup() {
   status=$?
+  rollback_failed=false
   if [[ "${status}" -ne 0 ]]; then
     if [[ "${services_stopped}" == true ]]; then
       if [[ "${files_swapped}" == true ]]; then
-        "${COMPOSE[@]}" run --rm --no-deps -T app python -c '
+        if ! "${COMPOSE[@]}" run --rm --no-deps -T app python -c '
 import shutil, sys
 from pathlib import Path
 root = Path("/app/data/attachments")
@@ -77,18 +102,35 @@ if rollback.exists():
     for child in list(rollback.iterdir()):
         child.rename(root / child.name)
     rollback.rmdir()
-' "${rollback_dir}" || true
+' "${rollback_dir}"; then
+          rollback_failed=true
+        fi
       fi
       if [[ "${db_swapped}" == true ]]; then
-        "${COMPOSE[@]}" exec -T postgres sh -ceu '
+        if ! "${COMPOSE[@]}" exec -T postgres sh -ceu '
           live=$POSTGRES_DB
           previous=$1
-          dropdb --force --if-exists --username "$POSTGRES_USER" "$live"
+          failed=$2
           psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
-            --command "ALTER DATABASE \"$previous\" RENAME TO \"$live\""
-        ' sh "${previous_db}" || true
+            --command "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '\''$live'\'' AND pid <> pg_backend_pid()" >/dev/null
+          psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+            --command "ALTER DATABASE \"$live\" RENAME TO \"$failed\""
+          if ! psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+            --command "ALTER DATABASE \"$previous\" RENAME TO \"$live\""; then
+            psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
+              --command "ALTER DATABASE \"$failed\" RENAME TO \"$live\"" || true
+            exit 1
+          fi
+        ' sh "${previous_db}" "${failed_db}"; then
+          rollback_failed=true
+        fi
       fi
-      "${COMPOSE[@]}" up -d --wait app caddy >/dev/null || true
+      if [[ "${rollback_failed}" == false ]]; then
+        if ! "${COMPOSE[@]}" up -d --wait app caddy >/dev/null; then
+          rollback_failed=true
+          "${COMPOSE[@]}" stop caddy app >/dev/null 2>&1 || true
+        fi
+      fi
     fi
     if [[ "${db_swapped}" == false ]]; then
       "${COMPOSE[@]}" exec -T postgres sh -ceu '
@@ -102,6 +144,10 @@ target = Path("/app/data/attachments") / sys.argv[1]
 if target.exists():
     shutil.rmtree(target)
 ' "${staging_dir}" >/dev/null 2>&1 || true
+    if [[ "${rollback_failed}" == true ]]; then
+      printf 'Rollback did not complete. Manual recovery is required; application traffic remains stopped.\n' >&2
+      exit 2
+    fi
   fi
   exit "${status}"
 }
@@ -115,6 +161,16 @@ trap cleanup EXIT
   pg_restore --exit-on-error --no-owner --no-acl --username "$POSTGRES_USER" --dbname "$staging"
 ' sh "${staging_db}" < "${BACKUP_DIR}/database.dump"
 
+restored_revision="$("${COMPOSE[@]}" exec -T postgres sh -ceu '
+  export PGPASSWORD="$(cat /run/secrets/db_password)"
+  psql --username "$POSTGRES_USER" --dbname "$1" --tuples-only --no-align \
+    --command "SELECT version_num FROM alembic_version"
+' sh "${staging_db}")"
+if [[ "${restored_revision}" != "${expected_revision}" ]]; then
+  printf 'Restored schema revision does not match the application image.\n' >&2
+  exit 1
+fi
+
 "${COMPOSE[@]}" run --rm --no-deps -T app python -c '
 import shutil, sys, tarfile
 from pathlib import Path
@@ -126,6 +182,11 @@ target.mkdir(mode=0o700)
 with tarfile.open(fileobj=sys.stdin.buffer, mode="r|gz") as archive:
     archive.extractall(target, filter="data")
 ' "${staging_dir}" < "${BACKUP_DIR}/attachments.tar.gz"
+
+"${COMPOSE[@]}" run --rm --no-deps -T \
+  -e SPM_DB_NAME="${staging_db}" \
+  -e SPM_ATTACHMENT_DIR="/app/data/attachments/${staging_dir}" \
+  app python -m app.verify_attachments
 
 "${COMPOSE[@]}" stop caddy app
 services_stopped=true

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,55 @@ def test_default_admin_must_change_password_before_access(tmp_path: Path):
     assert stale_session.get("/").headers["location"] == "/login"
 
 
+def test_login_rejects_cross_site_origin(tmp_path: Path):
+    app = create_app(f"sqlite:///{tmp_path / 'login-csrf.db'}", seed=False)
+    client = TestClient(app, follow_redirects=False)
+
+    response = client.post(
+        "/login",
+        headers={"Origin": "https://attacker.example"},
+        data={"username": "admin", "password": "admin123@"},
+    )
+
+    assert response.status_code == 403
+    assert "set-cookie" not in response.headers
+
+
+def test_login_origin_check_allows_tls_terminating_proxy_scheme_change(tmp_path: Path):
+    app = create_app(f"sqlite:///{tmp_path / 'login-proxy.db'}", seed=False)
+    client = TestClient(app, base_url="http://testserver", follow_redirects=False)
+
+    response = client.post(
+        "/login",
+        headers={"Origin": "https://testserver"},
+        data={"username": "admin", "password": "admin123@"},
+    )
+
+    assert response.status_code == 303
+    assert "set-cookie" in response.headers
+
+
+def test_login_allows_null_origin_only_for_same_origin_browser_navigation(tmp_path: Path):
+    app = create_app(f"sqlite:///{tmp_path / 'login-null-origin.db'}", seed=False)
+    client = TestClient(app, follow_redirects=False)
+
+    allowed = client.post(
+        "/login",
+        headers={"Origin": "null", "Sec-Fetch-Site": "same-origin"},
+        data={"username": "admin", "password": "admin123@"},
+    )
+    rejected = client.post(
+        "/login",
+        headers={"Origin": "null", "Sec-Fetch-Site": "cross-site"},
+        data={"username": "admin", "password": "admin123@"},
+    )
+
+    assert allowed.status_code == 303
+    assert "set-cookie" in allowed.headers
+    assert rejected.status_code == 403
+    assert "set-cookie" not in rejected.headers
+
+
 def test_secure_cookie_mode_emits_hsts_header(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DFO_SPM_COOKIE_SECURE", "true")
     app = create_app(f"sqlite:///{tmp_path / 'secure.db'}", seed=False)
@@ -111,6 +161,45 @@ def test_production_postgresql_requires_alembic_schema_management(monkeypatch):
 
     with pytest.raises(RuntimeError, match="SCHEMA_MANAGEMENT"):
         validate_runtime_settings("postgresql+psycopg://user:pass@postgres/dfo")
+
+
+def test_readiness_fails_when_alembic_schema_is_missing(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DFO_SPM_SCHEMA_MANAGEMENT", "alembic")
+    monkeypatch.setenv("DFO_SPM_BOOTSTRAP_ON_START", "false")
+    app = create_app(f"sqlite:///{tmp_path / 'unmigrated.db'}", seed=False)
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+
+
+def test_readiness_fails_when_attachment_storage_is_not_writable(tmp_path: Path, monkeypatch):
+    attachment_dir = tmp_path / "read-only-attachments"
+    attachment_dir.mkdir()
+    attachment_dir.chmod(0o555)
+    monkeypatch.setenv("DFO_SPM_ATTACHMENT_DIR", str(attachment_dir))
+    try:
+        app = create_app(f"sqlite:///{tmp_path / 'ready.db'}", seed=False)
+        response = TestClient(app).get("/ready")
+    finally:
+        attachment_dir.chmod(0o755)
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+
+
+def test_readiness_fails_when_database_is_read_only(tmp_path: Path, monkeypatch):
+    database = tmp_path / "read-only.db"
+    create_app(f"sqlite:///{database}", seed=False)
+    database.chmod(0o444)
+    monkeypatch.setenv("DFO_SPM_ATTACHMENT_DIR", str(tmp_path / "attachments"))
+    app = create_app(f"sqlite:///file:{database}?mode=ro&uri=true", seed=False)
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
 
 
 def test_production_mode_rejects_untrusted_hosts(tmp_path: Path, monkeypatch):
@@ -175,7 +264,7 @@ def test_non_admin_cannot_provision_users(tmp_path: Path):
     }).status_code == 403
 
 
-def test_login_is_throttled_after_repeated_failures(tmp_path: Path):
+def test_login_throttling_does_not_lock_every_account_behind_one_address(tmp_path: Path):
     database_url = f"sqlite:///{tmp_path / 'throttle.db'}"
     app = create_app(database_url, seed=False)
     client = TestClient(app, follow_redirects=False)
@@ -183,13 +272,27 @@ def test_login_is_throttled_after_repeated_failures(tmp_path: Path):
     for attempt in range(5):
         assert client.post("/login", data={"username": f"unknown-{attempt}", "password": "wrong-password"}).status_code == 401
 
-    blocked = client.post("/login", data={"username": "admin", "password": "admin123@"})
+    allowed = client.post("/login", data={"username": "admin", "password": "admin123@"})
+    assert allowed.status_code == 303
+
+
+def test_login_is_throttled_per_account_across_source_addresses(tmp_path: Path):
+    database_url = f"sqlite:///{tmp_path / 'account-throttle.db'}"
+    app = create_app(database_url, seed=False)
+    now = datetime.now(timezone.utc)
+    with Session(create_engine(database_url)) as db:
+        for attempt in range(5):
+            db.add(AccessAudit(
+                username="admin",
+                action="LOGIN_FAILED",
+                actor=f"198.51.100.{attempt}",
+                detail="Invalid credentials.",
+                timestamp=now,
+            ))
+        db.commit()
+
+    blocked = TestClient(app, follow_redirects=False).post(
+        "/login", data={"username": "admin", "password": "admin123@"}
+    )
     assert blocked.status_code == 429
     assert blocked.headers["retry-after"] == "900"
-
-    for _ in range(10):
-        assert client.post("/login", data={"username": "another-user", "password": "wrong-password"}).status_code == 429
-
-    with Session(create_engine(database_url)) as db:
-        assert db.scalar(select(func.count(AccessAudit.id)).where(AccessAudit.action == "LOGIN_FAILED")) == 5
-        assert db.scalar(select(func.count(AccessAudit.id)).where(AccessAudit.action == "LOGIN_THROTTLED")) == 0

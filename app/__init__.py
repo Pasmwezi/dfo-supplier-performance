@@ -1,1 +1,1 @@
-"""DFO Supplier Performance Management System."""
+"""Supplier Performance Management System."""

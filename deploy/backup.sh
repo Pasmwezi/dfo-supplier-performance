@@ -25,14 +25,17 @@ if ! flock -n 9; then
   exit 1
 fi
 stamp="$(date -u +%Y%m%dT%H%M%S%NZ)"
-temporary="$(mktemp -d "${BACKUP_ROOT}/.dfo-spm-${stamp}.XXXXXX")"
-destination="${BACKUP_ROOT}/dfo-spm-${stamp}"
+temporary="$(mktemp -d "${BACKUP_ROOT}/.spm-${stamp}.XXXXXX")"
+destination="${BACKUP_ROOT}/spm-${stamp}"
 services_stopped=false
 cleanup() {
   status=$?
   rm -rf "${temporary}"
   if [[ "${services_stopped}" == true ]]; then
-    "${COMPOSE[@]}" up -d --wait app caddy >/dev/null || true
+    if ! "${COMPOSE[@]}" up -d --wait app caddy >/dev/null; then
+      printf 'Backup failed and application restart also failed; manual recovery is required.\n' >&2
+      status=2
+    fi
   fi
   exit "${status}"
 }
@@ -40,6 +43,8 @@ trap cleanup EXIT
 
 "${COMPOSE[@]}" stop caddy app
 services_stopped=true
+
+"${COMPOSE[@]}" run --rm --no-deps -T app python -m app.verify_attachments
 
 "${COMPOSE[@]}" exec -T postgres sh -ceu '
   export PGPASSWORD="$(cat /run/secrets/db_password)"
@@ -58,10 +63,20 @@ with tarfile.open(fileobj=sys.stdout.buffer, mode="w|gz") as archive:
 )
 printf 'created_at_utc=%s\n' "${stamp}" > "${temporary}/MANIFEST"
 printf 'compose_project=%s\n' "$("${COMPOSE[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')" >> "${temporary}/MANIFEST"
+schema_revision="$("${COMPOSE[@]}" exec -T postgres sh -ceu '
+  export PGPASSWORD="$(cat /run/secrets/db_password)"
+  psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align \
+    --command "SELECT version_num FROM alembic_version"
+')"
+if [[ ! "${schema_revision}" =~ ^[A-Za-z0-9_]+$ ]]; then
+  printf 'Unable to record a valid schema revision.\n' >&2
+  exit 1
+fi
+printf 'schema_revision=%s\n' "${schema_revision}" >> "${temporary}/MANIFEST"
 
 mv "${temporary}" "${destination}"
 "${COMPOSE[@]}" up -d --wait app caddy
 services_stopped=false
 trap - EXIT
-find "${BACKUP_ROOT}" -mindepth 1 -maxdepth 1 -type d -name 'dfo-spm-*' -mtime "+${RETENTION_DAYS}" -exec rm -rf -- {} +
+find "${BACKUP_ROOT}" -mindepth 1 -maxdepth 1 -type d \( -name 'spm-*' -o -name 'dfo-spm-*' \) -mtime "+${RETENTION_DAYS}" -exec rm -rf -- {} +
 printf 'Backup created: %s\n' "${destination}"

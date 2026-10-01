@@ -10,14 +10,14 @@ from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
@@ -31,6 +31,7 @@ from .domain import (
     construction_result,
     supplier_risk_profile,
 )
+from .config import env
 from .auth import hash_password, new_session_token, session_token_hash, validate_new_password, verify_password
 from .exports import correspondence_pdf, performance_history_xlsx, tabular_report_pdf
 from .models import AccessAudit, Attachment, AuditEntry, Base, Contract, DecisionAudit, Evaluation, EvaluationProjectDetails, EvaluationVersion, PerformanceDecision, Supplier, UserAccount, UserSession, utcnow
@@ -38,6 +39,7 @@ from .schemas import ContractCreate, DecisionCreate, EvaluationCreate, Evaluatio
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+EXPECTED_SCHEMA_REVISION = "e7a4b9c2d101"
 
 WORKFLOW_TRANSITIONS = {
     ("DRAFT", "submit"): "SUBMITTED",
@@ -174,7 +176,7 @@ def calculate(model: str, scores: dict[str, float | None], weights: dict[str, fl
 
 
 def secret_from_env(name: str) -> str | None:
-    secret_file = os.getenv(f"{name}_FILE")
+    secret_file = env(f"{name}_FILE")
     if secret_file:
         try:
             value = Path(secret_file).read_text(encoding="utf-8").strip()
@@ -183,57 +185,61 @@ def secret_from_env(name: str) -> str | None:
         if not value:
             raise RuntimeError(f"{name}_FILE is empty.")
         return value
-    return os.getenv(name) or None
+    return env(name) or None
 
 
 def database_url_from_env() -> str:
-    database_url = os.getenv("DFO_SPM_DATABASE_URL")
-    if not database_url and os.getenv("DFO_SPM_DB_PASSWORD_FILE"):
-        password = secret_from_env("DFO_SPM_DB_PASSWORD")
-        user = os.getenv("DFO_SPM_DB_USER", "dfo_spm")
-        host = os.getenv("DFO_SPM_DB_HOST", "postgres")
-        port = os.getenv("DFO_SPM_DB_PORT", "5432")
-        name = os.getenv("DFO_SPM_DB_NAME", "dfo_spm")
+    database_url = env("SPM_DATABASE_URL")
+    if not database_url and env("SPM_DB_PASSWORD_FILE"):
+        password = secret_from_env("SPM_DB_PASSWORD")
+        user = env("SPM_DB_USER", "spm")
+        host = env("SPM_DB_HOST", "postgres")
+        port = env("SPM_DB_PORT", "5432")
+        name = env("SPM_DB_NAME", "spm")
         if password:
             database_url = f"postgresql+psycopg://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{quote(name, safe='')}"
     if not database_url:
-        raise RuntimeError("DFO_SPM_DATABASE_URL is required and must identify a PostgreSQL database.")
+        raise RuntimeError("SPM_DATABASE_URL (legacy DFO_SPM_DATABASE_URL) is required and must identify a PostgreSQL database.")
     if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
-        raise RuntimeError("DFO_SPM_DATABASE_URL must use PostgreSQL.")
+        raise RuntimeError("SPM_DATABASE_URL (legacy DFO_SPM_DATABASE_URL) must use PostgreSQL.")
     return database_url
 
 
 def bootstrap_admin_password(database_url: str) -> str:
-    password = secret_from_env("DFO_SPM_DEFAULT_ADMIN_PASSWORD")
+    password = secret_from_env("SPM_DEFAULT_ADMIN_PASSWORD")
     if not password and database_url.startswith("sqlite"):
         return "admin123@"
     if not password:
-        raise RuntimeError("DFO_SPM_DEFAULT_ADMIN_PASSWORD is required when creating the first PostgreSQL administrator.")
+        raise RuntimeError("SPM_DEFAULT_ADMIN_PASSWORD (legacy DFO_SPM_DEFAULT_ADMIN_PASSWORD) is required when creating the first PostgreSQL administrator.")
     error = validate_new_password(password)
     if error:
-        raise RuntimeError(f"DFO_SPM_DEFAULT_ADMIN_PASSWORD is invalid: {error}")
+        raise RuntimeError(f"SPM_DEFAULT_ADMIN_PASSWORD (legacy DFO_SPM_DEFAULT_ADMIN_PASSWORD) is invalid: {error}")
     return password
 
 
 def validate_runtime_settings(database_url: str) -> None:
-    if os.getenv("DFO_SPM_ENV", "development").lower() == "production":
-        if os.getenv("DFO_SPM_COOKIE_SECURE", "false").lower() != "true":
-            raise RuntimeError("DFO_SPM_COOKIE_SECURE must be true in production.")
-        if not os.getenv("DFO_SPM_TRUSTED_HOSTS", "").strip():
-            raise RuntimeError("DFO_SPM_TRUSTED_HOSTS is required in production.")
-        if not database_url.startswith("sqlite") and os.getenv("DFO_SPM_SCHEMA_MANAGEMENT", "").lower() != "alembic":
-            raise RuntimeError("DFO_SPM_SCHEMA_MANAGEMENT must be alembic for production PostgreSQL.")
+    if env("SPM_ENV", "development").lower() == "production":
+        if env("SPM_COOKIE_SECURE", "false").lower() != "true":
+            raise RuntimeError("SPM_COOKIE_SECURE (legacy DFO_SPM_COOKIE_SECURE) must be true in production.")
+        if not env("SPM_TRUSTED_HOSTS", "").strip():
+            raise RuntimeError("SPM_TRUSTED_HOSTS (legacy DFO_SPM_TRUSTED_HOSTS) is required in production.")
+        if not database_url.startswith("sqlite") and env("SPM_SCHEMA_MANAGEMENT", "").lower() != "alembic":
+            raise RuntimeError("SPM_SCHEMA_MANAGEMENT (legacy DFO_SPM_SCHEMA_MANAGEMENT) must be alembic for production PostgreSQL.")
 
 
 def advisory_lock_key(value: str) -> int:
     return int.from_bytes(hashlib.blake2b(value.encode(), digest_size=8).digest(), "big", signed=True)
 
 
+def locked_get(db: Session, model, record_id: int):
+    return db.scalar(select(model).where(model.id == record_id).with_for_update())
+
+
 def ensure_bootstrap_admin(session_factory, database_url: str) -> None:
     with session_factory() as db:
         if db.scalar(select(UserAccount).where(UserAccount.role == "ADMIN")):
             return
-        admin_username = os.getenv("DFO_SPM_DEFAULT_ADMIN_USERNAME", "admin").strip().lower()
+        admin_username = env("SPM_DEFAULT_ADMIN_USERNAME", "admin").strip().lower()
         admin_password = bootstrap_admin_password(database_url)
         db.add(UserAccount(username=admin_username, display_name="System Administrator", password_hash=hash_password(admin_password), role="ADMIN", must_change_password=True, created_by="SYSTEM"))
         db.add(AccessAudit(username=admin_username, action="ADMIN_BOOTSTRAPPED", actor="SYSTEM", detail="Forced password change enabled"))
@@ -246,16 +252,16 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-    if os.getenv("DFO_SPM_SCHEMA_MANAGEMENT", "application").lower() != "alembic":
+    if env("SPM_SCHEMA_MANAGEMENT", "application").lower() != "alembic":
         Base.metadata.create_all(engine)
 
-    app = FastAPI(title="DFO Supplier Performance Management System", version="1.0.0")
-    trusted_hosts = [host.strip() for host in os.getenv("DFO_SPM_TRUSTED_HOSTS", "").split(",") if host.strip()]
+    app = FastAPI(title="Supplier Performance Management System", version="1.0.0")
+    trusted_hosts = [host.strip() for host in env("SPM_TRUSTED_HOSTS", "").split(",") if host.strip()]
     if trusted_hosts:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
     app.state.engine = engine
     app.state.session_factory = SessionLocal
-    upload_dir = BASE_DIR.parent / "data" / "attachments"
+    upload_dir = Path(env("SPM_ATTACHMENT_DIR", str(BASE_DIR.parent / "data" / "attachments")))
     upload_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
@@ -267,7 +273,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
             db.close()
 
     def resolve_principal(request: Request, authorization: str | None = None) -> dict | None:
-        token = authorization[7:] if authorization and authorization.startswith("Bearer ") else request.cookies.get("dfo_spm_session")
+        token = authorization[7:] if authorization and authorization.startswith("Bearer ") else (request.cookies.get("spm_session") or request.cookies.get("dfo_spm_session"))
         if not token:
             return None
         now = utcnow()
@@ -329,7 +335,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Cache-Control"] = "no-store"
-        if os.getenv("DFO_SPM_COOKIE_SECURE", "false").lower() == "true":
+        if env("SPM_COOKIE_SECURE", "false").lower() == "true":
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
@@ -339,22 +345,42 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
 
     @app.post("/login")
     def login(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+        origin = request.headers.get("Origin")
+        if origin:
+            if origin == "null":
+                same_origin = request.headers.get("Sec-Fetch-Site") == "same-origin"
+            else:
+                parsed_origin = urlsplit(origin)
+                same_origin = parsed_origin.scheme in {"http", "https"} and parsed_origin.hostname == request.url.hostname
+            if not same_origin:
+                raise HTTPException(403, "Cross-site sign-in is not permitted.")
         normalized = username.strip().lower()
         source = request.client.host if request.client else "unknown"
         source_key = source[:200]
         source_detail = f"source={source}"
-        throttle_window = int(os.getenv("DFO_SPM_LOGIN_THROTTLE_SECONDS", "900"))
-        max_attempts = int(os.getenv("DFO_SPM_LOGIN_MAX_ATTEMPTS", "5"))
+        throttle_window = int(env("SPM_LOGIN_THROTTLE_SECONDS", "900"))
+        account_max_attempts = int(env("SPM_LOGIN_MAX_ATTEMPTS", "5"))
+        source_max_attempts = int(env("SPM_LOGIN_SOURCE_MAX_ATTEMPTS", "50"))
         if db.bind is not None and db.bind.dialect.name == "postgresql":
-            db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": advisory_lock_key(source_key)})
-        recent_failures = db.scalar(
+            lock_keys = sorted({advisory_lock_key(f"account:{normalized}"), advisory_lock_key(f"source:{source_key}")})
+            for lock_key in lock_keys:
+                db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+        window_start = utcnow() - timedelta(seconds=throttle_window)
+        recent_account_failures = db.scalar(
+            select(func.count(AccessAudit.id)).where(
+                AccessAudit.action == "LOGIN_FAILED",
+                AccessAudit.username == normalized[:80],
+                AccessAudit.timestamp >= window_start,
+            )
+        ) or 0
+        recent_source_failures = db.scalar(
             select(func.count(AccessAudit.id)).where(
                 AccessAudit.action == "LOGIN_FAILED",
                 AccessAudit.actor == source_key,
-                AccessAudit.timestamp >= utcnow() - timedelta(seconds=throttle_window),
+                AccessAudit.timestamp >= window_start,
             )
         ) or 0
-        if recent_failures >= max_attempts:
+        if recent_account_failures >= account_max_attempts or recent_source_failures >= source_max_attempts:
             return TEMPLATES.TemplateResponse(
                 request,
                 "login.html",
@@ -374,7 +400,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         db.commit()
         destination = "/change-password" if account.must_change_password else "/"
         response = RedirectResponse(destination, status_code=303)
-        response.set_cookie("dfo_spm_session", token, httponly=True, secure=os.getenv("DFO_SPM_COOKIE_SECURE", "false").lower() == "true", samesite="strict", max_age=28800)
+        response.set_cookie("spm_session", token, httponly=True, secure=env("SPM_COOKIE_SECURE", "false").lower() == "true", samesite="strict", max_age=28800)
         return response
 
     @app.get("/change-password", response_class=HTMLResponse)
@@ -406,22 +432,23 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         db.add(AccessAudit(username=account.username, action="PASSWORD_CHANGED", actor=account.display_name, detail="All prior sessions revoked"))
         db.commit()
         response = RedirectResponse("/", status_code=303)
-        response.set_cookie("dfo_spm_session", replacement_token, httponly=True, secure=os.getenv("DFO_SPM_COOKIE_SECURE", "false").lower() == "true", samesite="strict", max_age=28800)
+        response.set_cookie("spm_session", replacement_token, httponly=True, secure=env("SPM_COOKIE_SECURE", "false").lower() == "true", samesite="strict", max_age=28800)
         return response
 
     @app.post("/logout")
     def logout(request: Request, db: Session = Depends(get_db)):
-        token = request.cookies.get("dfo_spm_session")
-        if token:
+        tokens = {token for name in ("spm_session", "dfo_spm_session") if (token := request.cookies.get(name))}
+        for token in tokens:
             session = db.scalar(select(UserSession).where(UserSession.token_hash == session_token_hash(token), UserSession.revoked_at.is_(None)))
             if session:
                 session.revoked_at = utcnow()
-                db.commit()
+        db.commit()
         response = RedirectResponse("/login", status_code=303)
+        response.delete_cookie("spm_session")
         response.delete_cookie("dfo_spm_session")
         return response
 
-    if os.getenv("DFO_SPM_BOOTSTRAP_ON_START", "true").lower() == "true":
+    if env("SPM_BOOTSTRAP_ON_START", "true").lower() == "true":
         ensure_bootstrap_admin(SessionLocal, database_url)
 
     with SessionLocal() as db:
@@ -449,7 +476,23 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         try:
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
-        except SQLAlchemyError:
+                if env("SPM_SCHEMA_MANAGEMENT", "application").lower() == "alembic":
+                    tables = set(inspect(connection).get_table_names())
+                    if not set(Base.metadata.tables).issubset(tables) or "alembic_version" not in tables:
+                        raise SQLAlchemyError("Required migrated schema is unavailable.")
+                    revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+                    if revision != EXPECTED_SCHEMA_REVISION:
+                        raise SQLAlchemyError("Required schema revision is unavailable.")
+                connection.execute(text("UPDATE user_sessions SET token_hash = token_hash WHERE 1 = 0"))
+            probe_path = upload_dir / f".readiness-{secrets.token_hex(8)}"
+            try:
+                with probe_path.open("xb") as probe:
+                    probe.write(b"ready")
+                    probe.flush()
+                    os.fsync(probe.fileno())
+            finally:
+                probe_path.unlink(missing_ok=True)
+        except (OSError, SQLAlchemyError):
             return JSONResponse({"status": "unavailable"}, status_code=503)
         return {"status": "ready"}
 
@@ -519,7 +562,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         data = payload.model_dump()
         if data["performance_regime"] == "APPLICABLE_CONTRACT_TERMS":
             construction_types = {"Construction", "Construction Standing Offer", "Construction Call-Up"}
-            data["performance_regime"] = "GI16_GC1_22" if data["procurement_type"] in construction_types else "DFO_AE_EXTENDED"
+            data["performance_regime"] = "GI16_GC1_22" if data["procurement_type"] in construction_types else "AE_EXTENDED"
         contract = Contract(**data)
         db.add(contract)
         try:
@@ -549,7 +592,8 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         compatible_models = {
             "GI16_GC1_22": {"CONSTRUCTION"},
             "GI23_GC26_2913_1": {"AE_CPERF"},
-            "DFO_AE_EXTENDED": {"AE"},
+            "AE_EXTENDED": {"AE"},
+            "DFO_AE_EXTENDED": {"AE"},  # Existing contracts retain their historical regime.
         }
         if payload.model not in compatible_models.get(contract_details.performance_regime, set()):
             raise HTTPException(422, f"Evaluation model {payload.model} is incompatible with contract regime {contract_details.performance_regime}.")
@@ -617,7 +661,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
 
     @app.patch("/api/evaluations/{evaluation_id}")
     def update_evaluation(evaluation_id: int, payload: EvaluationUpdate, request: Request, user: str = Depends(require_roles("EVALUATOR")), db: Session = Depends(get_db)):
-        ev = db.get(Evaluation, evaluation_id)
+        ev = locked_get(db, Evaluation, evaluation_id)
         if not ev:
             raise HTTPException(404, "Evaluation not found.")
         if ev.status not in {"DRAFT", "RETURNED"}:
@@ -672,7 +716,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
     @app.post("/api/evaluations/{evaluation_id}/workflow/{action}")
     def workflow(evaluation_id: int, action: str, payload: WorkflowActionRequest | None = None, principal: dict = Depends(authenticate), db: Session = Depends(get_db)):
         roles = set(principal.get("roles", []))
-        ev = db.get(Evaluation, evaluation_id)
+        ev = locked_get(db, Evaluation, evaluation_id)
         if not ev:
             raise HTTPException(404, "Evaluation not found.")
         normalized_action = action.lower()
@@ -719,7 +763,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
 
     @app.post("/api/evaluations/{evaluation_id}/attachments", status_code=201)
     async def upload_attachment(evaluation_id: int, request: Request, file: UploadFile = File(...), user: str = Depends(require_roles("EVALUATOR")), db: Session = Depends(get_db)):
-        ev = db.get(Evaluation, evaluation_id)
+        ev = locked_get(db, Evaluation, evaluation_id)
         if not ev:
             raise HTTPException(404, "Evaluation not found.")
         if ev.status not in {"DRAFT", "RETURNED"}:
@@ -833,7 +877,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
 
     @app.post("/api/decisions/{decision_id}/approve")
     def approve_decision(decision_id: int, user: str = Depends(require_roles("DECISION_MAKER")), db: Session = Depends(get_db)):
-        item = db.get(PerformanceDecision, decision_id)
+        item = locked_get(db, PerformanceDecision, decision_id)
         if not item:
             raise HTTPException(404, "Decision not found.")
         if item.status != "PENDING":
@@ -898,7 +942,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
             paragraphs.append("This result requires performance improvement. Under the applicable contract terms, a further evaluation of 50% or less within two years may support a suspension decision. Any decision must follow the applicable authority, notice, representation and approval process.")
         if ev.outcome == "SUSPENSION_RECOMMENDATION":
             paragraphs.append("The system has identified this result for suspension review. This is a recommendation and not a final suspension decision until the authorized decision-maker completes procedural fairness and approval requirements.")
-        content = correspondence_pdf({"date": ev.evaluation_date.isoformat(), "supplier": supplier.name, "contract": ev.contract.contract_number, "subject": subjects[ev.outcome], "paragraphs": paragraphs})
+        content = correspondence_pdf({"date": ev.evaluation_date.isoformat(), "supplier": supplier.name, "contract": ev.contract.contract_number, "organization": ev.contract.department, "subject": subjects[ev.outcome], "paragraphs": paragraphs})
         return Response(content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="evaluation-{ev.id}-letter.pdf"'})
 
     @app.get("/api/reports/performance-history.xlsx")
@@ -912,7 +956,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
             "model": ev.model, "score": ev.total_score, "outcome": ev.outcome, "status": ev.status,
         } for ev in evaluations]
         content = performance_history_xlsx(rows)
-        return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="dfo-performance-history.xlsx"'})
+        return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="performance-history.xlsx"'})
 
     @app.get("/api/reports/{report_name}.pdf")
     def report_pdf(report_name: str, db: Session = Depends(get_db)):
@@ -959,7 +1003,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
                 for e in evaluations:
                     if e.outcome == "SUSPENSION_RECOMMENDATION":
                         rows.append([e.contract.supplier.name, "RECOMMENDATION", "REVIEW REQUIRED", e.evaluation_date.isoformat(), ""])
-        content = tabular_report_pdf(supported[report_name], f"Generated from approved DFO supplier performance records · {date.today().isoformat()}", headers, rows)
+        content = tabular_report_pdf(supported[report_name], f"Generated from approved supplier performance records · {date.today().isoformat()}", headers, rows)
         return Response(content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{report_name}.pdf"'})
 
     @app.get("/", response_class=HTMLResponse)
@@ -1033,17 +1077,17 @@ def seed_demo(db: Session) -> None:
     if db.scalar(select(func.count()).select_from(Supplier)):
         return
     suppliers = [
-        Supplier(name="Atlantic Marine Constructors Ltd.", business_number="DFO-AC-1001"),
-        Supplier(name="Northstar Engineering Group", business_number="DFO-NE-1002"),
-        Supplier(name="Boreal Environmental Services Inc.", business_number="DFO-BE-1003"),
-        Supplier(name="Harbourline Architecture JV", business_number="DFO-HA-1004"),
+        Supplier(name="Atlantic Marine Constructors Ltd.", business_number="DEMO-AC-1001"),
+        Supplier(name="Northstar Engineering Group", business_number="DEMO-NE-1002"),
+        Supplier(name="Boreal Environmental Services Inc.", business_number="DEMO-BE-1003"),
+        Supplier(name="Harbourline Architecture JV", business_number="DEMO-HA-1004"),
     ]
     db.add_all(suppliers); db.flush()
     contracts = [
-        Contract(supplier_id=suppliers[0].id, contract_number="F5211-250101", project_number="MAR-24-018", procurement_type="Construction", region="Atlantic", department="Fisheries and Oceans Canada", performance_regime="GI16_GC1_22", status="ACTIVE"),
-        Contract(supplier_id=suppliers[1].id, contract_number="F5211-250202", standing_offer_number="SO-ENG-2025-04", call_up_number="CU-017", project_number="PAC-25-004", procurement_type="Standing Offer Call-Ups", region="Pacific", department="Fisheries and Oceans Canada", performance_regime="DFO_AE_EXTENDED", status="ACTIVE"),
-        Contract(supplier_id=suppliers[2].id, contract_number="F5211-240303", project_number="C&A-23-077", procurement_type="Environmental Services", region="Central and Arctic", department="Fisheries and Oceans Canada", performance_regime="GI23_GC26_2913_1", status="CLOSED"),
-        Contract(supplier_id=suppliers[3].id, contract_number="F5211-250404", standing_offer_number="SO-AE-2025-02", project_number="QUE-25-021", procurement_type="Architectural Services", region="Quebec", department="Fisheries and Oceans Canada", performance_regime="DFO_AE_EXTENDED", status="ACTIVE"),
+        Contract(supplier_id=suppliers[0].id, contract_number="F5211-250101", project_number="MAR-24-018", procurement_type="Construction", region="Atlantic", department="Example Contracting Organization", performance_regime="GI16_GC1_22", status="ACTIVE"),
+        Contract(supplier_id=suppliers[1].id, contract_number="F5211-250202", standing_offer_number="SO-ENG-2025-04", call_up_number="CU-017", project_number="PAC-25-004", procurement_type="Standing Offer Call-Ups", region="Pacific", department="Example Contracting Organization", performance_regime="AE_EXTENDED", status="ACTIVE"),
+        Contract(supplier_id=suppliers[2].id, contract_number="F5211-240303", project_number="C&A-23-077", procurement_type="Environmental Services", region="Central and Arctic", department="Example Contracting Organization", performance_regime="GI23_GC26_2913_1", status="CLOSED"),
+        Contract(supplier_id=suppliers[3].id, contract_number="F5211-250404", standing_offer_number="SO-AE-2025-02", project_number="QUE-25-021", procurement_type="Architectural Services", region="Quebec", department="Example Contracting Organization", performance_regime="AE_EXTENDED", status="ACTIVE"),
     ]
     db.add_all(contracts); db.flush()
     demo = [
@@ -1055,7 +1099,7 @@ def seed_demo(db: Session) -> None:
     ]
     for contract, model, scores, weights, issues, status, eval_date in demo:
         result, weights = calculate(model, scores, weights)
-        ev = Evaluation(contract_id=contract.id, model=model, evaluation_date=eval_date, due_date=eval_date + timedelta(days=30), evaluator="DFO Project Authority", scores=scores, weights=weights, ratings=result["ratings"], issues=issues, comments="Demonstration record with supporting evidence retained on file.", total_score=result["percentage"], outcome=result["outcome"], status=status, version=1)
+        ev = Evaluation(contract_id=contract.id, model=model, evaluation_date=eval_date, due_date=eval_date + timedelta(days=30), evaluator="Project Authority", scores=scores, weights=weights, ratings=result["ratings"], issues=issues, comments="Demonstration record with supporting evidence retained on file.", total_score=result["percentage"], outcome=result["outcome"], status=status, version=1)
         db.add(ev); db.flush()
         db.add(EvaluationVersion(evaluation_id=ev.id, version=1, snapshot=snapshot(ev), user="Seed Administrator"))
         db.add(AuditEntry(evaluation_id=ev.id, user="Seed Administrator", action="CREATE", revised_value=json.dumps(snapshot(ev), default=str)))

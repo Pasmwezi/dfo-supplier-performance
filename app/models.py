@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -42,7 +42,10 @@ class UserSession(Base):
 
 class AccessAudit(Base):
     __tablename__ = "access_audit"
-    __table_args__ = (Index("ix_access_audit_login_throttle", "action", "actor", "timestamp"),)
+    __table_args__ = (
+        Index("ix_access_audit_login_throttle", "action", "actor", "timestamp"),
+        Index("ix_access_audit_account_throttle", "action", "username", "timestamp"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(80), index=True)
     action: Mapped[str] = mapped_column(String(80), index=True)
@@ -71,7 +74,7 @@ class Contract(Base):
     project_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     procurement_type: Mapped[str] = mapped_column(String(100), index=True)
     region: Mapped[str] = mapped_column(String(100), index=True)
-    department: Mapped[str] = mapped_column(String(200), default="Fisheries and Oceans Canada")
+    department: Mapped[str] = mapped_column(String(200), default="Contracting Organization")
     contract_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     performance_evaluation_required: Mapped[bool] = mapped_column(default=True)
     performance_regime: Mapped[str] = mapped_column(String(80), default="APPLICABLE_CONTRACT_TERMS")
@@ -131,6 +134,7 @@ class EvaluationProjectDetails(Base):
 
 class EvaluationVersion(Base):
     __tablename__ = "evaluation_versions"
+    __table_args__ = (UniqueConstraint("evaluation_id", "version", name="uq_evaluation_versions_evaluation_version"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     evaluation_id: Mapped[int] = mapped_column(ForeignKey("evaluations.id"), index=True)
     version: Mapped[int] = mapped_column(Integer)

@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{% block title %}DFO Supplier Performance{% endblock %}</title>
+  <title>{% block title %}Supplier Performance Management{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
   <link href="/static/app.css" rel="stylesheet">
 </head>
 <body>
-<header class="masthead"><a class="brand" href="/"><span class="flag">DFO</span><span>Supplier Performance Management</span></a><div class="header-user"><span class="environment">{{ request.state.principal.name }} · {{ request.state.principal.roles[0]|replace('_',' ') }}</span><form method="post" action="/logout"><button type="submit" class="logout-button">Sign out</button></form></div></header>
+<header class="masthead"><a class="brand" href="/"><span class="flag">SPM</span><span>Supplier Performance Management</span></a><div class="header-user"><span class="environment">{{ request.state.principal.name }} · {{ request.state.principal.roles[0]|replace('_',' ') }}</span><form method="post" action="/logout"><button type="submit" class="logout-button">Sign out</button></form></div></header>
 <div class="shell">
 <nav class="sidebar" aria-label="Primary">
   <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Overview</a>

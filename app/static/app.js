@@ -112,11 +112,12 @@
       payload.new_contract = {
         contract_number: fd.get('new_contract_number'), project_number: optional('new_project_number'),
         procurement_type: fd.get('new_procurement_type'), region: fd.get('new_region'),
+        department: fd.get('new_department') || 'Contracting Organization',
         standing_offer_number: optional('new_standing_offer_number'), call_up_number: optional('new_call_up_number'),
         contract_value: fd.get('new_contract_value') ? Number(fd.get('new_contract_value')) : null,
         start_date: optional('new_start_date'), end_date: optional('new_end_date'),
         status: fd.get('new_contract_status'), performance_evaluation_required: true,
-        performance_regime: {CONSTRUCTION:'GI16_GC1_22',AE:'DFO_AE_EXTENDED',AE_CPERF:'GI23_GC26_2913_1'}[model.value]
+        performance_regime: {CONSTRUCTION:'GI16_GC1_22',AE:'AE_EXTENDED',AE_CPERF:'GI23_GC26_2913_1'}[model.value]
       };
     } else payload.contract_id = Number(fd.get('contract_id'));
     const message = document.getElementById('form-message');

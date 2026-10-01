@@ -37,10 +37,10 @@ class ContractCreate(BaseModel):
     project_number: str | None = Field(default=None, max_length=100)
     procurement_type: ProcurementType
     region: Region
-    department: str = Field(default="Fisheries and Oceans Canada", max_length=200)
+    department: str = Field(default="Contracting Organization", max_length=200)
     contract_value: float | None = Field(default=None, ge=0)
     performance_evaluation_required: bool = True
-    performance_regime: Literal["GI16_GC1_22", "GI23_GC26_2913_1", "DFO_AE_EXTENDED", "APPLICABLE_CONTRACT_TERMS"] = "APPLICABLE_CONTRACT_TERMS"
+    performance_regime: Literal["GI16_GC1_22", "GI23_GC26_2913_1", "AE_EXTENDED", "DFO_AE_EXTENDED", "APPLICABLE_CONTRACT_TERMS"] = "APPLICABLE_CONTRACT_TERMS"
     status: Literal["ACTIVE", "CLOSED", "SUSPENDED"] = "ACTIVE"
     start_date: date | None = None
     end_date: date | None = None
@@ -59,10 +59,10 @@ class InlineContractCreate(BaseModel):
     project_number: str | None = Field(default=None, max_length=100)
     procurement_type: ProcurementType
     region: Region
-    department: str = Field(default="Fisheries and Oceans Canada", max_length=200)
+    department: str = Field(default="Contracting Organization", max_length=200)
     contract_value: float | None = Field(default=None, ge=0)
     performance_evaluation_required: bool = True
-    performance_regime: Literal["GI16_GC1_22", "GI23_GC26_2913_1", "DFO_AE_EXTENDED"]
+    performance_regime: Literal["GI16_GC1_22", "GI23_GC26_2913_1", "AE_EXTENDED", "DFO_AE_EXTENDED"]
     status: Literal["ACTIVE", "CLOSED", "SUSPENDED"] = "ACTIVE"
     start_date: date | None = None
     end_date: date | None = None

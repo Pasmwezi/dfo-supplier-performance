@@ -1,6 +1,8 @@
-# DFO Supplier Performance Management System
+# Supplier Performance Management
 
-A working full-stack reference implementation for contractor and consultant performance evaluation across construction, A&E contracts, standing offers, supply arrangements, and call-ups.
+A working, organization-neutral full-stack reference implementation for contractor and consultant performance evaluation across construction, architectural and engineering (A&E) contracts, standing offers, supply arrangements, and call-ups.
+
+Canadian federal contract clauses and forms inform the supplied scoring profiles; they are not universally applicable policy. Each organization must establish the executed contractual terms, applicable law and sector policy, approved scoring model, and decision-making authority before using evaluations for contractual or eligibility decisions. Private and other-sector users must validate their own contractual/policy basis rather than assume Canadian federal guidance applies. The application does not automatically establish compliance or authorize adverse action.
 
 ## Delivered modules
 
@@ -20,31 +22,31 @@ A working full-stack reference implementation for contractor and consultant perf
 
 ## Quick start
 
-Dependencies are installed locally under `.deps` in this build. PostgreSQL 17 is provided through Docker Compose for the local deployment.
+PostgreSQL 17 is provided through Docker Compose for the local deployment. Use your checkout location in place of the example path below; the existing deployment directory has not been renamed.
 
 ```bash
-cd /home/clawserver/dfo-supplier-performance
+cd /path/to/supplier-performance
 cp .env.example .env
 # Replace the example database password, matching URL password, and bootstrap administrator password in .env.
 docker compose up -d postgres
 ./run.sh
 ```
 
-Open <http://127.0.0.1:8088>. The initial username and temporary password come from `DFO_SPM_DEFAULT_ADMIN_USERNAME` and `DFO_SPM_DEFAULT_ADMIN_PASSWORD`; startup refuses to create the first PostgreSQL administrator if the password is missing or fails policy. The administrator is forced to select a new password before any supplier-performance data or administration page is accessible, and changing it revokes every older session. The development launcher binds to loopback by default; external access must use the production TLS ingress below. The administrator then creates separate evaluator, reviewer, approver and decision-maker accounts under **Administration → User access**; each new account receives a temporary password and must replace it at first sign-in.
+Open <http://127.0.0.1:8088>. The initial username and temporary password come from `SPM_DEFAULT_ADMIN_USERNAME` and `SPM_DEFAULT_ADMIN_PASSWORD`; startup refuses to create the first PostgreSQL administrator if the password is missing or fails policy. The administrator is forced to select a new password before any supplier-performance data or administration page is accessible, and changing it revokes every older session. The development launcher binds to loopback by default; external access must use the production TLS ingress below. The administrator then creates separate evaluator, reviewer, approver and decision-maker accounts under **Administration → User access**; each new account receives a temporary password and must replace it at first sign-in.
 
 Run tests:
 
 ```bash
-PYTHONPATH=.deps:. .deps/bin/pytest -q
+python3 -m pytest -q
 ```
 
-For a clean install on a host with Python virtual-environment support:
+For a clean install on a host with Python virtual-environment support, install dependencies before launching or running tests (and start PostgreSQL as above):
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8088
+./run.sh
 ```
 
 ## Docker production deployment
@@ -57,6 +59,8 @@ The production stack runs PostgreSQL, one-shot Alembic migration and administrat
    ```bash
    cp .env.production.example .env.production
    ```
+
+   When this host already has a TLS reverse proxy, keep `APP_DOMAIN` as the public hostname, set `CADDY_SITE_ADDRESS=http://APP_DOMAIN`, set `CADDY_HEALTH_URL=http://localhost`, and publish only `HTTP_PORT` to that proxy. The outer proxy remains responsible for the public certificate and HTTPS redirect.
 
 3. Generate local Docker secrets without printing them:
 
@@ -87,14 +91,22 @@ Backups briefly quiesce Caddy and the application to keep the PostgreSQL dump an
 
 ```bash
 ENV_FILE="$PWD/.env.production" ./deploy/backup.sh
-RESTORE_CONFIRM=restore ENV_FILE="$PWD/.env.production" ./deploy/restore.sh backups/dfo-spm-YYYYMMDDTHHMMSSZ
+RESTORE_CONFIRM=restore ENV_FILE="$PWD/.env.production" ./deploy/restore.sh "backups/ACTUAL_BACKUP_DIRECTORY"
 ```
 
 Copy encrypted backups off-host and schedule restore drills. Before upgrades, run a backup, pull the reviewed revision, and rerun the production `up -d --build --wait` command; Alembic applies pending schema revisions before traffic reaches the app.
 
+## Configuration and upgrade compatibility
+
+`SPM_*` environment variables are canonical, including `SPM_DATABASE_URL`, `SPM_DB_NAME`, `SPM_DB_USER`, `SPM_DB_PASSWORD` (or `SPM_DB_PASSWORD_FILE`), `SPM_DEFAULT_ADMIN_USERNAME`, `SPM_DEFAULT_ADMIN_PASSWORD` (or `SPM_DEFAULT_ADMIN_PASSWORD_FILE`), and `SPM_COOKIE_SECURE`. Legacy `DFO_SPM_*` equivalents remain supported for existing deployments; use the canonical names for new installations and avoid conflicting canonical and legacy settings.
+
+`AE_EXTENDED` is the canonical extended A&E contractual regime. Legacy `DFO_AE_EXTENDED` input and stored records remain supported; existing records do not need to be rewritten merely for branding. The `AE` eight-criterion evaluation profile and `AE_CPERF` five-criterion profile remain distinct from contractual regime identifiers.
+
+For **new installations**, use organization-neutral directory/project/database names (for example `supplier-performance`, `spm-production`, and `spm`). For **existing installations**, intentionally preserve the actual checkout directory (including `/home/clawserver/dfo-supplier-performance`), Compose project name, database name/user, persistent volumes, attachment paths, and backup locations. They are operational identifiers, not product branding. Do not rename them, run `docker compose down -v`, or create replacement volumes as a cosmetic upgrade: changing project or storage identifiers can disconnect the deployment from its existing data. Any deliberate storage migration requires a verified backup, explicit mapping to existing volumes/data, and a tested restore/cutover procedure. Historical backup directory names such as `dfo-spm-*` do not require renaming; pass the actual directory to restore. The current automated restore requires a checksum-verified backup with a `schema_revision` entry in `MANIFEST`. Older backups without that metadata are intentionally rejected: retain the originals and validate their database revision and recovery procedure in an isolated environment before any operator-approved conversion. Do not invent a revision or bypass restore validation.
+
 ## Data and workflow
 
-- Database: PostgreSQL 17, configured by `DFO_SPM_DATABASE_URL`; local Compose binds PostgreSQL only to `127.0.0.1:5433`
+- Database: PostgreSQL 17, configured by `SPM_DATABASE_URL`; local Compose binds PostgreSQL only to `127.0.0.1:5433`
 - Attachment store: `data/attachments/`
 - Evaluation statuses: `DRAFT → SUBMITTED → REVIEWED → APPROVED`; submitted/reviewed evaluations may be returned
 - Only draft and returned evaluations may be edited or receive evidence; submitted, reviewed and approved records are locked
@@ -132,28 +144,28 @@ For defensible operation, issue separate accounts to separate people. Do not sha
 
 | Risk | Level | Control in this build | Production action required |
 |---|---|---|---|
-| Eight-criterion A&E model differs from GC26/2913-1 five-criterion instrument | **High** | Separate `AE` and `AE_CPERF` profiles; source register documents mapping issue | Obtain DFO legal/policy approval and formally amend contractual instruments before making the extended profile authoritative |
-| Recommendation confused with suspension decision | **High** | Automated outcome is only `SUSPENSION_RECOMMENDATION`; pending/approved decisions, notice, representations, legal review and delegated-authority references are separate and audited | Validate the workflow and authority matrix with DFO Legal Services and procurement policy owners |
-| Identity and access management | **High** | PostgreSQL-backed accounts, salted scrypt hashes, forced temporary-password replacement, role gates, hashed/revocable sessions, HttpOnly same-site cookie, CSP, access audit and basic segregation of duties | Integrate GC identity/SSO, MFA, centrally managed claims, automated deprovisioning, privileged-access reviews and formal delegated authorities |
-| Protected B information | **High** | Authenticated access, no-store responses, security headers, randomized attachment names, 20 MB streaming limit, type/signature checks and SHA-256 evidence metadata | Deploy only to an approved Protected B environment; enable HTTPS and `DFO_SPM_COOKIE_SECURE=true`; encrypt at rest; add malware/CDR scanning; complete SA&A, TRA and privacy review |
-| Record retention / disposition | **Medium** | Full evaluation and audit history retained | Configure approved retention schedule, legal holds, disposition controls and Library and Archives requirements |
-| Bilingual legal correspondence | **Medium** | English operational templates only | Add mirror-structured French templates, translation QA and language-of-correspondence rules |
-| PostgreSQL resilience | **Medium** | PostgreSQL 17 local container with persistent volume and health check | Use a GC-approved managed PostgreSQL service with migrations, encryption, backups, replication, monitoring and disaster recovery |
-| Exact PSPC form facsimile | **Medium** | CPERF-compatible data and report register | Obtain permission/current form specification; implement approved fillable-PDF rendering and accessibility validation |
+| Eight-criterion A&E model differs from GC26/2913-1 five-criterion instrument | **High** | Separate `AE` and `AE_CPERF` profiles; source register documents mapping issue | Obtain the organization’s legal/policy approval and formally amend applicable contractual instruments before making the extended profile authoritative; validate GC26/2913-1 compatibility where those instruments govern |
+| Recommendation confused with suspension decision | **High** | Automated outcome is only `SUSPENSION_RECOMMENDATION`; pending/approved decisions, notice, representations, legal review and delegated-authority references are separate and audited | Validate notice, representations, legal review, workflow and delegated authority with the organization’s legal and procurement/policy owners; federal suspension rules apply only where applicable |
+| Identity and access management | **High** | PostgreSQL-backed accounts, salted scrypt hashes, forced temporary-password replacement, role gates, hashed/revocable sessions, HttpOnly same-site cookie, CSP, access audit and basic segregation of duties | Integrate organization-approved identity/SSO, MFA, centrally managed claims, automated deprovisioning, privileged-access reviews and formal delegated authorities; use GC requirements where applicable |
+| Sensitive information / Protected B where applicable | **High** | Authenticated access, no-store responses, security headers, randomized attachment names, 20 MB streaming limit, type/signature checks and SHA-256 evidence metadata | For Canadian federal Protected B data, deploy only to an approved Protected B environment and complete applicable SA&A, TRA and privacy review. Other sectors must meet their own classification, security authorization and privacy requirements. In all cases enable HTTPS and `SPM_COOKIE_SECURE=true`, encryption at rest and malware/CDR scanning |
+| Record retention / disposition | **Medium** | Full evaluation and audit history retained | Configure approved retention schedule, legal holds and disposition controls; apply Library and Archives Canada requirements for organizations/records subject to them and the relevant records laws/policy elsewhere |
+| Bilingual legal correspondence | **Medium** | English operational templates only | Where official-language law or contract/policy requires bilingual correspondence, add mirror-structured French templates, translation QA and language-of-correspondence rules; validate other language obligations for the deploying organization |
+| PostgreSQL resilience | **Medium** | PostgreSQL 17 local container with persistent volume and health check | Use organization-approved PostgreSQL hosting (GC-approved where required) with migrations, encryption, backups, replication, monitoring and disaster recovery |
+| Exact PSPC form facsimile | **Medium** | CPERF-compatible data and report register | Where an exact PSPC form is required, obtain permission/current form specification and implement approved fillable-PDF rendering and accessibility validation; CPERF-compatible reports are not automatically official forms |
 
 ## Production deployment checklist
 
-- Replace the local PostgreSQL container with managed PostgreSQL and introduce reviewed schema migrations.
+- Use organization-approved production PostgreSQL hosting and reviewed Alembic schema migrations; validate resilience and recovery requirements.
 - Store database credentials and bootstrap secrets in an approved secrets manager; never commit `.env`.
-- Terminate TLS at an approved GC ingress and set `DFO_SPM_COOKIE_SECURE=true`.
-- Integrate GC SSO/MFA and map authoritative identity claims to the role matrix.
+- Terminate TLS at an organization-approved ingress (GC-approved where required) and set `SPM_COOKIE_SECURE=true`.
+- Integrate organization-approved SSO/MFA (GC identity requirements where applicable) and map authoritative identity claims to the role matrix.
 - Add anti-malware/content-disarm scanning before attachments become available to users.
 - Configure centralized audit export/SIEM monitoring, alerting, backups, restore tests and disaster recovery.
-- Complete Protected B security assessment and authorization, privacy assessment, ATIP/records-retention design, WCAG testing, and bilingual legal review.
+- Complete applicable security assessment and authorization, privacy assessment, records-retention design, accessibility/WCAG testing, and language/legal review. For Canadian federal deployments, include Protected B, ATIP, Library and Archives, and bilingual requirements where applicable; private and other-sector deployments must meet their own legal and contractual obligations.
 - Obtain formal approval for scoring models, correspondence wording, thresholds, adverse-action notice/representation procedures and delegated authorities.
 
 ## Source traceability
 
 See [`COMPLIANCE_SOURCES.md`](COMPLIANCE_SOURCES.md) for the extracted GI16, GC1.22, GI23, GC26 and form 2913/2913-1 design basis.
 
-> This is a working reference implementation, not an Authority to Operate and not a final policy instrument. Production use requires security, privacy, accessibility, records-management, bilingual, legal and delegated-authority validation.
+> This is a working reference implementation, not an Authority to Operate, compliance certification, authorization to suspend a supplier, or final policy instrument. Production use requires organization- and sector-appropriate security, privacy, accessibility, records-management, language, legal and delegated-authority validation. Scores and recommendations do not replace authorized decisions or applicable notice and representation procedures.
