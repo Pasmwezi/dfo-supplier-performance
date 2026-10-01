@@ -104,6 +104,7 @@ class ProjectDetails(BaseModel):
 
 class EvaluationCreate(BaseModel):
     contract_id: int | None = None
+    supplier_id: int | None = Field(default=None, gt=0)
     new_supplier: SupplierCreate | None = None
     new_contract: InlineContractCreate | None = None
     model: Literal["CONSTRUCTION", "AE", "AE_CPERF"]
@@ -121,11 +122,13 @@ class EvaluationCreate(BaseModel):
         if self.due_date and self.due_date < self.evaluation_date:
             raise ValueError("Evaluation due date cannot precede evaluation date.")
         existing = self.contract_id is not None
-        inline = self.new_supplier is not None and self.new_contract is not None
-        if existing == inline:
-            raise ValueError("Provide either an existing contract_id or both new_supplier and new_contract.")
-        if (self.new_supplier is None) != (self.new_contract is None):
-            raise ValueError("New supplier and contract details must be provided together.")
+        has_supplier = self.supplier_id is not None
+        has_new_supplier = self.new_supplier is not None
+        has_new_contract = self.new_contract is not None
+        valid_existing = existing and not (has_supplier or has_new_supplier or has_new_contract)
+        valid_inline = not existing and has_new_contract and (has_supplier != has_new_supplier)
+        if not (valid_existing or valid_inline):
+            raise ValueError("Provide exactly one identification mode: contract_id alone, supplier_id with new_contract, or new_supplier with new_contract.")
         return self
 
 

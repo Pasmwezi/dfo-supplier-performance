@@ -7,18 +7,25 @@
   const form = document.getElementById('evaluation-form');
   const existingFields = document.getElementById('existing-contract-fields');
   const newSupplierFields = document.getElementById('new-supplier-fields');
+  const existingSupplierFields = document.getElementById('existing-supplier-fields');
+  const newContractFields = document.getElementById('new-contract-fields');
   const sections = {
     CONSTRUCTION: document.getElementById('criteria-construction'),
     AE: document.getElementById('criteria-ae'),
     AE_CPERF: document.getElementById('criteria-ae-cperf')
   };
   function setRecordMode() {
-    if (!form || !existingFields || !newSupplierFields) return;
-    const isNew = form.elements.record_mode.value === 'new';
-    existingFields.classList.toggle('hidden', isNew);
-    newSupplierFields.classList.toggle('hidden', !isNew);
-    existingFields.querySelectorAll('input,select').forEach(input => { input.disabled = isNew; input.required = !isNew; });
-    newSupplierFields.querySelectorAll('input,select').forEach(input => { input.disabled = !isNew; input.required = isNew && ['new_supplier_name','new_contract_number','new_procurement_type','new_region'].includes(input.name); });
+    if (!form || !existingFields || !newSupplierFields || !existingSupplierFields || !newContractFields) return;
+    const mode = form.elements.record_mode.value;
+    const requiredFields = ['contract_id', 'supplier_id', 'new_supplier_name', 'new_contract_number', 'new_procurement_type', 'new_region'];
+    [[existingFields, mode === 'existing'], [existingSupplierFields, mode === 'new_contract'],
+     [newSupplierFields, mode === 'new'], [newContractFields, mode !== 'existing']].forEach(([container, active]) => {
+      container.classList.toggle('hidden', !active);
+      container.querySelectorAll('input,select').forEach(input => {
+        input.disabled = !active;
+        input.required = active && requiredFields.includes(input.name);
+      });
+    });
   }
   if (form && existingFields) {
     form.querySelectorAll('input[name="record_mode"]').forEach(input => input.addEventListener('change', setRecordMode));
@@ -107,8 +114,10 @@
     };
     const evaluationId = form.dataset.evaluationId;
     if (evaluationId) delete payload.model;
-    else if (fd.get('record_mode') === 'new') {
-      payload.new_supplier = {name: fd.get('new_supplier_name'), business_number: optional('new_supplier_business_number')};
+    else if (['new', 'new_contract'].includes(fd.get('record_mode'))) {
+      if (fd.get('record_mode') === 'new') {
+        payload.new_supplier = {name: fd.get('new_supplier_name'), business_number: optional('new_supplier_business_number')};
+      } else payload.supplier_id = Number(fd.get('supplier_id'));
       payload.new_contract = {
         contract_number: fd.get('new_contract_number'), project_number: optional('new_project_number'),
         procurement_type: fd.get('new_procurement_type'), region: fd.get('new_region'),

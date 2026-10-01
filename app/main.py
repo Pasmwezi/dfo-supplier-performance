@@ -582,8 +582,10 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         contract = db.get(Contract, payload.contract_id) if payload.contract_id is not None else None
         if payload.contract_id is not None and not contract:
             raise HTTPException(404, "Contract not found.")
+        if payload.supplier_id is not None and not db.get(Supplier, payload.supplier_id):
+            raise HTTPException(404, "Supplier not found.")
         if contract is None:
-            assert payload.new_supplier is not None and payload.new_contract is not None
+            assert payload.new_contract is not None
             contract_details = payload.new_contract
         else:
             contract_details = contract
@@ -606,10 +608,14 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         created_supplier = None
         try:
             if contract is None:
-                created_supplier = Supplier(**payload.new_supplier.model_dump())
-                db.add(created_supplier)
-                db.flush()
-                contract = Contract(supplier_id=created_supplier.id, **payload.new_contract.model_dump())
+                if payload.new_supplier is not None:
+                    created_supplier = Supplier(**payload.new_supplier.model_dump())
+                    db.add(created_supplier)
+                    db.flush()
+                    supplier_id = created_supplier.id
+                else:
+                    supplier_id = payload.supplier_id
+                contract = Contract(supplier_id=supplier_id, **payload.new_contract.model_dump())
                 db.add(contract)
                 db.flush()
             ev = Evaluation(
@@ -636,6 +642,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
             db.add(EvaluationVersion(evaluation_id=ev.id, version=1, snapshot=snapshot(ev), user=user))
             if created_supplier:
                 db.add(AuditEntry(evaluation_id=ev.id, user=user, action="CREATE_SUPPLIER_WITH_EVALUATION", field_name="supplier", original_value=None, revised_value=json.dumps({"id": created_supplier.id, "name": created_supplier.name, "business_number": created_supplier.business_number})))
+            if payload.new_contract is not None:
                 db.add(AuditEntry(evaluation_id=ev.id, user=user, action="CREATE_CONTRACT_WITH_EVALUATION", field_name="contract", original_value=None, revised_value=json.dumps(contract_dict(contract), default=str)))
             db.add(AuditEntry(evaluation_id=ev.id, user=user, action="CREATE", field_name=None, original_value=None, revised_value=json.dumps(snapshot(ev), default=str)))
             db.commit()
@@ -1031,6 +1038,7 @@ def create_app(database_url: str | None = None, seed: bool = False, auth_tokens:
         contracts = db.scalars(select(Contract).order_by(Contract.contract_number)).all()
         return TEMPLATES.TemplateResponse(request, "evaluation_form.html", {
             "contracts": contracts,
+            "suppliers": db.scalars(select(Supplier).order_by(Supplier.name)).all(),
             "construction": CONSTRUCTION_CRITERIA,
             "construction_optional": CONSTRUCTION_OPTIONAL_CRITERIA,
             "ae": AE_DEFAULT_WEIGHTS,
